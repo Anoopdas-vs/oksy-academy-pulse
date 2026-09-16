@@ -844,17 +844,23 @@ function AppShell() {
         profile.id
       );
 
-      // Auto-matched collections get the full bank line description/
-      // reference written onto them as a permanent audit trail (see the
-      // "Fix Bank Reconciliation Matching Logic" brief) -- same as a
-      // manual match/classification does below.
-      const collectionBankRefs = parsed.lines
+      // Auto-matched collections/expenses/transfers get the full bank line
+      // description/reference written onto them as a permanent audit trail
+      // (see the "Fix Bank Reconciliation Matching Logic" brief) -- same as
+      // a manual match/classification does below.
+      const matchedLines = parsed.lines
         .map((ln, i) => ({ ln, m: matches[i] }))
-        .filter(({ m }) => m.status === "matched" && m.match_kind === "collection");
-      if (collectionBankRefs.length) {
+        .filter(({ m }) => m.status === "matched");
+      const bankRefUpdaters = {
+        collection: (id, patch) => updateCollection(id, patch),
+        expense: (id, patch) => updateExpense(id, patch, profile.id),
+        transfer: (id, patch) => updateTransfer(id, patch),
+      };
+      const bankRefWrites = matchedLines.filter(({ m }) => bankRefUpdaters[m.match_kind]);
+      if (bankRefWrites.length) {
         await Promise.all(
-          collectionBankRefs.map(({ ln, m }) =>
-            updateCollection(m.match_id, {
+          bankRefWrites.map(({ ln, m }) =>
+            bankRefUpdaters[m.match_kind](m.match_id, {
               bank_reference: bankReferenceText(ln),
             })
           )
@@ -882,6 +888,10 @@ function AppShell() {
       if (input.kind === "link") {
         if (input.linkKind === "collection") {
           await updateCollection(input.linkId, { bank_reference: bankReferenceText(line) });
+        } else if (input.linkKind === "expense") {
+          await updateExpense(input.linkId, { bank_reference: bankReferenceText(line) }, profile.id);
+        } else if (input.linkKind === "transfer") {
+          await updateTransfer(input.linkId, { bank_reference: bankReferenceText(line) });
         }
         await updateBankStatementLine(line.id, {
           status: "matched",
@@ -923,6 +933,7 @@ function AppShell() {
             amount,
             reference: line.reference || "",
             description: input.description || line.description || "",
+            bank_reference: bankReferenceText(line),
           },
           profile.id
         );
@@ -939,6 +950,7 @@ function AppShell() {
             purpose: input.purpose || line.description || "",
             reference: line.reference || "",
             note: "Created from bank reconciliation",
+            bank_reference: bankReferenceText(line),
           },
           profile.id
         );

@@ -11,6 +11,7 @@ import {
   nameSimilarity,
   identityMatchScore,
   bankReferenceMismatches,
+  matchedRecordDetail,
 } from "./reconcile.js";
 
 describe("accountLedger", () => {
@@ -252,5 +253,52 @@ describe("bankReferenceMismatches", () => {
   test("collections without a bank_reference are ignored", () => {
     const mismatches = bankReferenceMismatches([{ id: 1, student_name: "Anyone", amount: 100 }]);
     assert.equal(mismatches.length, 0);
+  });
+});
+
+describe("matchedRecordDetail — bank reference row", () => {
+  test("shows a Bank reference row for a matched expense that has one", () => {
+    const line = { match_kind: "expense", match_id: 1 };
+    const data = {
+      expenses: [
+        { id: 1, date: "2026-01-05", category: "Rent", account: "HDFC", amount: 500, bank_reference: "NEFT/RENT/JAN" },
+      ],
+    };
+    const detail = matchedRecordDetail(line, data);
+    assert.ok(detail.rows.some((r) => r.k === "Bank reference" && r.v === "NEFT/RENT/JAN"));
+  });
+
+  test("omits the Bank reference row for an expense without one", () => {
+    const line = { match_kind: "expense", match_id: 1 };
+    const data = { expenses: [{ id: 1, date: "2026-01-05", category: "Rent", account: "HDFC", amount: 500 }] };
+    const detail = matchedRecordDetail(line, data);
+    assert.ok(!detail.rows.some((r) => r.k === "Bank reference"));
+  });
+
+  test("shows a Bank reference row for a matched transfer that has one", () => {
+    const line = { match_kind: "transfer", match_id: 1 };
+    const data = {
+      transfers: [
+        {
+          id: 1,
+          date: "2026-01-05",
+          from_account: "HDFC",
+          to_account: "Cash",
+          amount: 200,
+          bank_reference: "ATM WDL 200",
+        },
+      ],
+    };
+    const detail = matchedRecordDetail(line, data);
+    assert.ok(detail.rows.some((r) => r.k === "Bank reference" && r.v === "ATM WDL 200"));
+  });
+
+  test("omits the Bank reference row for a transfer without one", () => {
+    const line = { match_kind: "transfer", match_id: 1 };
+    const data = {
+      transfers: [{ id: 1, date: "2026-01-05", from_account: "HDFC", to_account: "Cash", amount: 200 }],
+    };
+    const detail = matchedRecordDetail(line, data);
+    assert.ok(!detail.rows.some((r) => r.k === "Bank reference"));
   });
 });
