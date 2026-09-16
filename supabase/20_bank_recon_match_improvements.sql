@@ -67,7 +67,11 @@ alter table public.bank_statement_lines
 
 -- Recreate collections_basic to surface bank_reference. Same shape/owner/
 -- security_barrier as 06_close_collections_view_bypass.sql — see that
--- migration's comments for why this is NOT security_invoker.
+-- migration's comments for why this is NOT security_invoker. bank_reference
+-- is appended LAST in the select list (after the existing `account` CASE)
+-- because CREATE OR REPLACE VIEW only allows adding columns at the end --
+-- inserting it earlier renumbers `account` and Postgres errors with
+-- "cannot change name of view column ... to ..." (42P16).
 create or replace view public.collections_basic
 with (security_barrier = true)
 as
@@ -79,11 +83,11 @@ select
   type,
   amount,
   reference,
-  bank_reference,
   case
     when public.can_view_financials() or created_by = auth.uid() then account
     else null
-  end as account
+  end as account,
+  bank_reference
 from public.collections
 where public.is_approved_user();
 
