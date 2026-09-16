@@ -333,6 +333,7 @@ export function matchedRecordDetail(line, data = {}, students = []) {
         { k: "Description", v: e.description || "—" },
         { k: "Account", v: e.account || "—" },
         { k: "Amount", v: formatMoney(e.amount) },
+        ...(e.bank_reference ? [{ k: "Bank reference", v: e.bank_reference }] : []),
       ],
     };
   }
@@ -348,6 +349,7 @@ export function matchedRecordDetail(line, data = {}, students = []) {
         { k: "Purpose", v: t.purpose || "—" },
         { k: "Reference", v: t.reference || "—" },
         { k: "Amount", v: formatMoney(t.amount) },
+        ...(t.bank_reference ? [{ k: "Bank reference", v: t.bank_reference }] : []),
       ],
     };
   }

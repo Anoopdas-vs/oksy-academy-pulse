@@ -60,6 +60,7 @@ export const REPORTS = [
           type: c.type,
           account: c.account,
           reference: c.reference || "",
+          bankReference: c.bank_reference || "",
           amount: Number(c.amount || 0),
         }));
       return {
@@ -69,6 +70,7 @@ export const REPORTS = [
           { key: "type", label: "Type" },
           { key: "account", label: "A/C" },
           { key: "reference", label: "Reference" },
+          { key: "bankReference", label: "Bank Reference" },
           { key: "amount", label: "Amount", money: true },
         ],
         rows,
@@ -122,6 +124,7 @@ export const REPORTS = [
           category: e.category,
           account: e.account,
           description: e.description || "",
+          bankReference: e.bank_reference || "",
           amount: Number(e.amount || 0),
         }));
       return {
@@ -131,6 +134,7 @@ export const REPORTS = [
           { key: "category", label: "Category" },
           { key: "account", label: "A/C" },
           { key: "description", label: "Description" },
+          { key: "bankReference", label: "Bank Reference" },
           { key: "amount", label: "Amount", money: true },
         ],
         rows: out,
@@ -220,6 +224,7 @@ export const REPORTS = [
           to: t.to_account,
           purpose: t.purpose || "",
           reference: t.reference || "",
+          bankReference: t.bank_reference || "",
           amount: Number(t.amount || 0),
         }));
       return {
@@ -229,6 +234,7 @@ export const REPORTS = [
           { key: "to", label: "To" },
           { key: "purpose", label: "Purpose" },
           { key: "reference", label: "Reference" },
+          { key: "bankReference", label: "Bank Reference" },
           { key: "amount", label: "Amount", money: true },
         ],
         rows,
