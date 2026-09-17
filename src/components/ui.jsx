@@ -87,6 +87,14 @@ export function Modal({ title, children, onClose }) {
   const titleId = useId();
   const modalRef = useRef(null);
   const overlayRef = useRef(null);
+  // Latest onClose, read inside the effect below without being a dependency
+  // of it. Callers pass a fresh inline onClose fn on every render; depending
+  // on it directly used to re-run this mount effect on every keystroke
+  // inside the modal, which re-focused the first focusable element (the ×
+  // close button) after each character typed — breaking text entry in
+  // every modal form.
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
 
   useEffect(() => {
     const prevActive = document.activeElement;
@@ -105,7 +113,7 @@ export function Modal({ title, children, onClose }) {
     const handleKeyDown = (e) => {
       if (e.key === "Escape") {
         e.stopPropagation();
-        onClose?.();
+        onCloseRef.current?.();
         return;
       }
       if (e.key === "Tab" && modalRef.current) {
@@ -141,7 +149,10 @@ export function Modal({ title, children, onClose }) {
         prevActive.focus();
       }
     };
-  }, [onClose]);
+    // Run once on mount/unmount only — onClose is read via onCloseRef above,
+    // so a new onClose reference on re-render must not re-run this effect.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
     <div
