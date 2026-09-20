@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { ErrorBanner, Input, Modal } from "../components/ui.jsx";
-import { formatMoney } from "../lib/format.js";
+import { formatMoney, expenseCode } from "../lib/format.js";
 import { SearchBox, Pager } from "../components/SearchPager.jsx";
 import { usePagedList } from "../lib/usePagedList.js";
 import { downloadTemplate } from "../lib/templates.js";
@@ -10,7 +10,6 @@ const FALLBACK_CATEGORIES = [
   "Marketing", "Office Expense", "Travel", "Bank Charge", "Other",
 ];
 const ACCOUNTS = ["HDFC", "ICICI", "Cash", "Healthcare"];
-const expenseCode = (id) => `EXP-${String(id).padStart(5, "0")}`;
 
 export default function ExpensesPage({
   expenses,
@@ -44,8 +43,8 @@ export default function ExpensesPage({
       <div className="page-actions">
         <button className="button secondary" onClick={() => downloadTemplate(
           "expense_template.xlsx",
-          ["Date", "Category", "Payment A/C", "Amount", "Reference", "Description"],
-          ["2026-06-01", "Rent", "HDFC", 25000, "RENT-002", "Monthly rent"]
+          ["Expense ID", "Date", "Category", "Payment A/C", "Amount", "Reference", "Description"],
+          ["", "2026-06-01", "Rent", "HDFC", 25000, "RENT-002", "Monthly rent"]
         )}>
           Download Template
         </button>
