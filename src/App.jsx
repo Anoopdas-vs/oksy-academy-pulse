@@ -7,7 +7,7 @@ import ForcePasswordChange from "./components/ForcePasswordChange.jsx";
 import ImportPreviewModal from "./components/ImportPreviewModal.jsx";
 import ErrorBoundary from "./components/ErrorBoundary.jsx";
 import NotificationBell from "./components/NotificationBell.jsx";
-import { today } from "./lib/format.js";
+import { today, parseReceiptNo, parseExpenseId } from "./lib/format.js";
 import PeriodFilter from "./components/PeriodFilter.jsx";
 import { resolvePeriod, inRange, periodLabel } from "./lib/period.js";
 import {
@@ -1117,6 +1117,7 @@ function AppShell() {
           legacyParty.toLowerCase() === "healthcare"
             ? "Healthcare"
             : row["Payment A/C"] || row["Account"] || "HDFC";
+        const receiptNoRaw = row["Receipt No"] || row["ReceiptNo"] || row["Receipt"];
 
         const problems = [];
         if (isBlank(studentIdRaw)) problems.push("Missing Student ID");
@@ -1128,7 +1129,36 @@ function AppShell() {
         }
         problems.push(...validateMoneyRow({ date, amount, account }));
 
+        // A Receipt No means "overwrite that existing collection" instead of
+        // adding a new one. Only admins may do this (matches the manual Edit
+        // permission — collections can only be UPDATEd by admins at the RLS
+        // layer anyway); the Receipt No must resolve to a real collection
+        // whose Student ID matches this row's, or the row is rejected rather
+        // than silently overwriting — or silently inserting — the wrong thing.
+        let mode = "insert";
+        let targetId = null;
+        const parsedReceiptId = parseReceiptNo(receiptNoRaw);
+        if (parsedReceiptId !== null) {
+          if (Number.isNaN(parsedReceiptId)) {
+            problems.push("Invalid Receipt No format");
+          } else {
+            mode = "update";
+            targetId = parsedReceiptId;
+            if (!isAdmin) {
+              problems.push("Only admins can overwrite existing records via upload — leave Receipt No blank to add a new entry");
+            } else {
+              const existing = collections.find((c) => String(c.id) === String(targetId));
+              if (!existing) {
+                problems.push("Receipt No not found");
+              } else if (student && existing.student_id.toLowerCase() !== student.id.toLowerCase()) {
+                problems.push("Receipt No belongs to a different student");
+              }
+            }
+          }
+        }
+
         const preview = {
+          "Receipt No": receiptNoRaw ?? "",
           "Student ID": studentIdRaw ?? "",
           Date: date ?? "",
           Type: type,
@@ -1150,13 +1180,13 @@ function AppShell() {
               }
             : null;
 
-        return { rowNumber, preview, problems, record };
+        return { rowNumber, preview, problems, record, mode, targetId };
       });
 
       openImportPreview(
         "collections",
         "Import Fee Collections — Review",
-        ["Student ID", "Date", "Type", "Account", "Amount", "Reference"],
+        ["Receipt No", "Student ID", "Date", "Type", "Account", "Amount", "Reference"],
         parsed
       );
     });
@@ -1183,14 +1213,48 @@ function AppShell() {
             legacyParty.toLowerCase() === "healthcare"
               ? "Healthcare"
               : row["Payment A/C"] || row["Account"] || "HDFC";
+          const expenseIdRaw = row["Expense ID"] || row["ExpenseID"] || row["Exp ID"] || row["ID"];
 
           const problems = validateMoneyRow({ date, amount, account });
 
+          // An Expense ID means "overwrite that existing expense" instead of
+          // adding a new one. Only admins may do this (matches the manual Edit
+          // permission — expenses RLS actually allows any approved user to
+          // UPDATE, but the upload path deliberately holds it to the same bar
+          // as the Edit button rather than opening a wider hole); the Expense
+          // ID must resolve to a real expense whose Category matches this
+          // row's, or the row is rejected rather than overwriting the wrong
+          // record.
+          let mode = "insert";
+          let targetId = null;
+          const parsedExpenseId = parseExpenseId(expenseIdRaw);
+          if (parsedExpenseId !== null) {
+            if (Number.isNaN(parsedExpenseId)) {
+              problems.push("Invalid Expense ID format");
+            } else {
+              mode = "update";
+              targetId = parsedExpenseId;
+              if (!isAdmin) {
+                problems.push("Only admins can overwrite existing records via upload — leave Expense ID blank to add a new entry");
+              } else {
+                const existing = expenses.find((e) => String(e.id) === String(targetId));
+                if (!existing) {
+                  problems.push("Expense ID not found");
+                } else if (existing.category !== category) {
+                  problems.push("Expense ID belongs to a different category");
+                }
+              }
+            }
+          }
+
           const preview = {
+            "Expense ID": expenseIdRaw ?? "",
             Date: date ?? "",
             Category: category,
             Account: account,
             Amount: amount ?? "",
+            Reference: row["Reference"] || row["reference"] || "",
+            Description: row["Description"] || row["description"] || "",
           };
 
           const record =
@@ -1205,13 +1269,13 @@ function AppShell() {
                 }
               : null;
 
-          return { rowNumber, preview, problems, record };
+          return { rowNumber, preview, problems, record, mode, targetId };
         });
 
       openImportPreview(
         "expenses",
         "Import Expenses — Review",
-        ["Date", "Category", "Account", "Amount"],
+        ["Expense ID", "Date", "Category", "Account", "Amount", "Reference", "Description"],
         parsed
       );
     });
@@ -1285,14 +1349,27 @@ function AppShell() {
     if (!importPreview) return;
     setImportPreview((p) => ({ ...p, committing: true }));
 
-    const records = importPreview.validRows.map((r) => r.record);
+    const validRows = importPreview.validRows;
+    const records = validRows.map((r) => r.record);
     try {
       if (importPreview.type === "students") {
         await bulkUpsertStudents(records, profile.id);
       } else if (importPreview.type === "collections") {
-        await bulkInsertCollections(records, profile.id);
+        const inserts = validRows.filter((r) => r.mode !== "update");
+        const updates = validRows.filter((r) => r.mode === "update");
+        if (inserts.length) await bulkInsertCollections(inserts.map((r) => r.record), profile.id);
+        // Sequential, not Promise.all: when a file has two rows for the same
+        // Receipt No, the later row must be the one left standing.
+        for (const r of updates) {
+          await updateCollection(r.targetId, r.record);
+        }
       } else if (importPreview.type === "expenses") {
-        await bulkInsertExpenses(records, profile.id);
+        const inserts = validRows.filter((r) => r.mode !== "update");
+        const updates = validRows.filter((r) => r.mode === "update");
+        if (inserts.length) await bulkInsertExpenses(inserts.map((r) => r.record), profile.id);
+        for (const r of updates) {
+          await updateExpense(r.targetId, r.record, profile.id);
+        }
       } else if (importPreview.type === "transfers") {
         await bulkInsertTransfers(records, profile.id);
       }

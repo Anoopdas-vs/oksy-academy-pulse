@@ -1,5 +1,6 @@
 import { inRange } from "./period.js";
 import { grossFee, effectiveFeeDue, outstanding, creditBalance } from "./fees.js";
+import { receiptNo, expenseCode } from "./format.js";
 
 const sum = (rows, f = (r) => r.amount) => rows.reduce((s, r) => s + Number(f(r) || 0), 0);
 const within = (rows, range) => (range ? rows.filter((r) => inRange(r.date, range)) : rows);
@@ -55,23 +56,27 @@ export const REPORTS = [
         .slice()
         .sort((a, b) => (a.date < b.date ? 1 : -1))
         .map((c) => ({
+          receiptNo: c.id ? receiptNo(c.id) : "",
+          studentId: c.student_id,
+          studentName: c.student_name || "",
           date: c.date,
-          student: `${c.student_name || ""} (${c.student_id})`,
           type: c.type,
           account: c.account,
+          amount: Number(c.amount || 0),
           reference: c.reference || "",
           bankReference: c.bank_reference || "",
-          amount: Number(c.amount || 0),
         }));
       return {
         columns: [
+          { key: "receiptNo", label: "Receipt No" },
+          { key: "studentId", label: "Student ID" },
+          { key: "studentName", label: "Student Name" },
           { key: "date", label: "Date" },
-          { key: "student", label: "Student" },
           { key: "type", label: "Type" },
-          { key: "account", label: "A/C" },
+          { key: "account", label: "Payment A/C" },
+          { key: "amount", label: "Amount", money: true },
           { key: "reference", label: "Reference" },
           { key: "bankReference", label: "Bank Reference" },
-          { key: "amount", label: "Amount", money: true },
         ],
         rows,
         summary: `${rows.length} payment(s) · ${fmt(sum(rows))}`,
@@ -119,23 +124,25 @@ export const REPORTS = [
         .slice()
         .sort((a, b) => (a.date < b.date ? 1 : -1))
         .map((e) => ({
+          expenseId: expenseCode(e.id),
           date: e.date,
-          id: `EXP-${String(e.id).padStart(5, "0")}`,
           category: e.category,
           account: e.account,
+          amount: Number(e.amount || 0),
+          reference: e.reference || "",
           description: e.description || "",
           bankReference: e.bank_reference || "",
-          amount: Number(e.amount || 0),
         }));
       return {
         columns: [
+          { key: "expenseId", label: "Expense ID" },
           { key: "date", label: "Date" },
-          { key: "id", label: "ID" },
           { key: "category", label: "Category" },
-          { key: "account", label: "A/C" },
+          { key: "account", label: "Payment A/C" },
+          { key: "amount", label: "Amount", money: true },
+          { key: "reference", label: "Reference" },
           { key: "description", label: "Description" },
           { key: "bankReference", label: "Bank Reference" },
-          { key: "amount", label: "Amount", money: true },
         ],
         rows: out,
         summary: `${out.length} expense(s) · ${fmt(sum(out))}`,
