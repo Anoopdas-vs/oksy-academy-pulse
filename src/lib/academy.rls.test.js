@@ -85,7 +85,8 @@ if (missing.length) {
 
   describe("H-2 assignment_submissions grading-column guard (live Supabase)", () => {
     test("full checklist: resubmit RPC, raw PATCH bypass, grader path, already-graded guard", async () => {
-      const batchName = `h2-test-${Date.now()}`;
+      // Must satisfy the batch-name rule (migration 25): ^[A-Z0-9]+$.
+      const batchName = `H2TEST${Date.now()}`;
       let assignmentId;
 
       const studentA = await signIn(process.env.TEST_STUDENT_A_EMAIL, process.env.TEST_STUDENT_A_PASSWORD);

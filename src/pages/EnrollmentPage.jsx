@@ -5,6 +5,7 @@ import { SearchBox, Pager } from "../components/SearchPager.jsx";
 import { usePagedList } from "../lib/usePagedList.js";
 import { downloadTemplate } from "../lib/templates.js";
 import { GUARDIAN_RELATIONS } from "../lib/validation.js";
+import { enrollmentPatchForBatch } from "../lib/batches.js";
 
 export default function EnrollmentPage({
   students,
@@ -24,16 +25,12 @@ export default function EnrollmentPage({
 }) {
   const set = (patch) => setForm({ ...form, ...patch });
 
-  // Picking a batch pre-fills the course name and course fee from the batch
-  // master (both stay editable afterwards).
+  // Picking a batch pre-fills the course name and, for a new enrollment,
+  // the course/registration/exam fees from the batch master. All stay
+  // editable (discounts) and are saved on the student row.
   const pickBatch = (name) => {
     const b = batches.find((x) => x.name === name);
-    if (!b) return set({ batch: name });
-    set({
-      batch: name,
-      course: b.course_name || form.course,
-      course_fee: b.course_fee ?? form.course_fee,
-    });
+    set({ batch: name, ...enrollmentPatchForBatch(b, form, { isNew: !editingStudent }) });
   };
   const paged = usePagedList(students, {
     searchFields: ["id", "name", "course", "batch", "student_phone", "parent_name", "place"],
