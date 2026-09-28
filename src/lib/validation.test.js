@@ -18,6 +18,12 @@ import {
   validateMoneyRow,
   VALID_ACCOUNTS,
   VALID_STATUSES,
+  normalizePhone,
+  isValidPhone,
+  isValidEmail,
+  validateStudentPersonal,
+  preparePersonalFields,
+  normalizeCourseCode,
 } from "./validation.js";
 
 describe("isBlank", () => {
@@ -143,6 +149,129 @@ describe("friendlyError — translating raw Postgres/RLS errors for non-technica
       assert.equal(typeof msg, "string");
       assert.ok(msg.length > 0);
       assert.notEqual(msg, "[object Object]");
+    }
+  });
+});
+
+// Student personal fields (migration 24). The JS rules must agree with the
+// database CHECK constraints: students_*_phone_format = '^[0-9]{10}$',
+// students_student_email_format = basic something@something.tld.
+describe("isValidPhone", () => {
+  test("accepts exactly 10 digits, tolerating spaces and dashes", () => {
+    assert.equal(isValidPhone("9847012345"), true);
+    assert.equal(isValidPhone("98470 12345"), true);
+    assert.equal(isValidPhone("984-701-2345"), true);
+  });
+
+  test("rejects too short, too long, country code, letters and blanks", () => {
+    assert.equal(isValidPhone("984701234"), false);
+    assert.equal(isValidPhone("98470123456"), false);
+    assert.equal(isValidPhone("+919847012345"), false);
+    assert.equal(isValidPhone("98470abcde"), false);
+    assert.equal(isValidPhone(""), false);
+    assert.equal(isValidPhone(null), false);
+  });
+
+  test("normalizePhone produces what the DB constraint checks", () => {
+    assert.equal(normalizePhone(" 98470 12345 "), "9847012345");
+    assert.match(normalizePhone("984-701-2345"), /^[0-9]{10}$/);
+  });
+});
+
+describe("isValidEmail", () => {
+  test("accepts ordinary addresses", () => {
+    assert.equal(isValidEmail("student@example.com"), true);
+    assert.equal(isValidEmail("a.b+tag@mail.co.in"), true);
+  });
+
+  test("rejects malformed addresses", () => {
+    assert.equal(isValidEmail("student"), false);
+    assert.equal(isValidEmail("student@"), false);
+    assert.equal(isValidEmail("student@example"), false);
+    assert.equal(isValidEmail("stu dent@example.com"), false);
+    assert.equal(isValidEmail("a@@example.com"), false);
+    assert.equal(isValidEmail(""), false);
+  });
+});
+
+describe("validateStudentPersonal", () => {
+  const valid = {
+    student_phone: "9847012345",
+    parent_name: "Ravi",
+    parent_phone: "9847054321",
+    place: "Kochi",
+  };
+
+  test("a complete new enrollment passes", () => {
+    assert.deepEqual(validateStudentPersonal(valid), []);
+  });
+
+  test("new enrollments require phone, parent name, parent phone and place", () => {
+    const problems = validateStudentPersonal({});
+    assert.equal(problems.length, 4);
+    assert.ok(problems.some((p) => /Student phone is required/.test(p)));
+    assert.ok(problems.some((p) => /Place is required/.test(p)));
+  });
+
+  test("editing a legacy student only checks format, not presence", () => {
+    assert.deepEqual(validateStudentPersonal({}, { requireAll: false }), []);
+    const problems = validateStudentPersonal({ parent_phone: "123" }, { requireAll: false });
+    assert.deepEqual(problems, ["Parent phone must be exactly 10 digits."]);
+  });
+
+  test("flags bad email, guardian relation and date of birth", () => {
+    const problems = validateStudentPersonal({
+      ...valid,
+      student_email: "nope",
+      guardian_relation: "Uncle",
+      date_of_birth: "not-a-date",
+    });
+    assert.equal(problems.length, 3);
+  });
+});
+
+describe("preparePersonalFields", () => {
+  test("blanks become null so the DB checks and date type accept them", () => {
+    const out = preparePersonalFields({ student_phone: "", student_email: "  ", date_of_birth: "" });
+    assert.equal(out.student_phone, null);
+    assert.equal(out.student_email, null);
+    assert.equal(out.date_of_birth, null);
+    assert.equal(out.lead_source, null);
+  });
+
+  test("phones are normalized and text is trimmed", () => {
+    const out = preparePersonalFields({ parent_phone: "98470 54321", place: "  Kochi " });
+    assert.equal(out.parent_phone, "9847054321");
+    assert.equal(out.place, "Kochi");
+  });
+});
+
+describe("normalizeCourseCode", () => {
+  test("upper-cases and trims to match courses_code_format", () => {
+    assert.equal(normalizeCourseCode(" dbhm "), "DBHM");
+    assert.equal(normalizeCourseCode(""), "");
+  });
+});
+
+describe("friendlyError for student personal-field constraints", () => {
+  test("maps phone/email check violations and duplicate course codes", () => {
+    const orig = console.error;
+    console.error = () => {};
+    try {
+      assert.match(
+        friendlyError({ message: 'new row for relation "students" violates check constraint "students_parent_phone_format"' }),
+        /10 digits/
+      );
+      assert.match(
+        friendlyError({ message: 'new row for relation "students" violates check constraint "students_student_email_format"' }),
+        /email/
+      );
+      assert.match(
+        friendlyError({ message: 'duplicate key value violates unique constraint "courses_code_key"' }),
+        /course code/
+      );
+    } finally {
+      console.error = orig;
     }
   });
 });

@@ -1,4 +1,5 @@
 import React, { useEffect, useId, useRef } from "react";
+import { clampOffset, DRAG_MEDIA_QUERY } from "../lib/drag.js";
 
 // Colour of the figure:
 //   tone="pos" | "neg"  → force green / red
@@ -83,10 +84,17 @@ export function Input({ label, value, onChange, type = "text", placeholder, erro
   );
 }
 
-export function Modal({ title, children, onClose }) {
+// `draggable` (opt-in) lets the user move the dialog by its header on
+// desktop/mouse screens. The offset is a CSS translate from the centred
+// position, held in a ref (no re-render per pointer move) and starting at
+// zero on every mount — so the dialog re-opens centred each time.
+export function Modal({ title, children, onClose, draggable = false }) {
   const titleId = useId();
   const modalRef = useRef(null);
   const overlayRef = useRef(null);
+  const headerRef = useRef(null);
+  const offsetRef = useRef({ dx: 0, dy: 0 });
+  const dragRef = useRef(null);
   // Latest onClose, read inside the effect below without being a dependency
   // of it. Callers pass a fresh inline onClose fn on every render; depending
   // on it directly used to re-run this mount effect on every keystroke
@@ -154,6 +162,83 @@ export function Modal({ title, children, onClose }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const applyOffset = (next) => {
+    offsetRef.current = next;
+    if (modalRef.current) {
+      modalRef.current.style.transform =
+        next.dx || next.dy ? `translate(${next.dx}px, ${next.dy}px)` : "";
+    }
+  };
+
+  const viewport = () => ({
+    width: document.documentElement.clientWidth,
+    height: document.documentElement.clientHeight,
+  });
+
+  const baseRect = () => {
+    const rect = modalRef.current.getBoundingClientRect();
+    const { dx, dy } = offsetRef.current;
+    return { left: rect.left - dx, top: rect.top - dy, width: rect.width };
+  };
+
+  // Keep a dragged dialog reachable when the window shrinks, and snap it
+  // back to the fixed centred layout below the desktop breakpoint.
+  useEffect(() => {
+    if (!draggable) return undefined;
+    const onResize = () => {
+      if (!modalRef.current || !headerRef.current) return;
+      if (!window.matchMedia(DRAG_MEDIA_QUERY).matches) {
+        applyOffset({ dx: 0, dy: 0 });
+        return;
+      }
+      applyOffset(clampOffset(offsetRef.current, baseRect(), viewport(), headerRef.current.offsetHeight));
+    };
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [draggable]);
+
+  const onHeaderPointerDown = (e) => {
+    if (!draggable || e.button !== 0 || e.pointerType === "touch") return;
+    if (!window.matchMedia(DRAG_MEDIA_QUERY).matches) return;
+    if (e.target.closest("button, a, input, select, textarea")) return;
+    const { dx, dy } = offsetRef.current;
+    dragRef.current = {
+      pointerId: e.pointerId,
+      startX: e.clientX,
+      startY: e.clientY,
+      startDx: dx,
+      startDy: dy,
+      base: baseRect(),
+      headerHeight: headerRef.current.offsetHeight,
+    };
+    e.currentTarget.setPointerCapture(e.pointerId);
+    e.currentTarget.classList.add("dragging");
+    e.preventDefault(); // no text selection / focus change while dragging
+  };
+
+  const onHeaderPointerMove = (e) => {
+    const d = dragRef.current;
+    if (!d || e.pointerId !== d.pointerId) return;
+    applyOffset(
+      clampOffset(
+        { dx: d.startDx + e.clientX - d.startX, dy: d.startDy + e.clientY - d.startY },
+        d.base,
+        viewport(),
+        d.headerHeight
+      )
+    );
+  };
+
+  const endDrag = (e) => {
+    const d = dragRef.current;
+    if (!d || e.pointerId !== d.pointerId) return;
+    dragRef.current = null;
+    e.currentTarget.classList.remove("dragging");
+    if (e.currentTarget.hasPointerCapture?.(e.pointerId)) {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    }
+  };
+
   return (
     <div
       className="modal-overlay"
@@ -172,7 +257,14 @@ export function Modal({ title, children, onClose }) {
         aria-labelledby={title ? titleId : undefined}
         tabIndex={-1}
       >
-        <div className="modal-header">
+        <div
+          ref={headerRef}
+          className={draggable ? "modal-header modal-header-draggable" : "modal-header"}
+          onPointerDown={draggable ? onHeaderPointerDown : undefined}
+          onPointerMove={draggable ? onHeaderPointerMove : undefined}
+          onPointerUp={draggable ? endDrag : undefined}
+          onPointerCancel={draggable ? endDrag : undefined}
+        >
           {title && <h3 id={titleId}>{title}</h3>}
           <button
             className="modal-close"

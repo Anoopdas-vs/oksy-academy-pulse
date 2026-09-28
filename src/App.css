@@ -1181,6 +1181,35 @@ tfoot td {
   padding: 20px;
 }
 
+/* Batches table: fee still 0 (old batches predate registration/exam fees). */
+.fee-not-set {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #9a5b00;
+  background: #fff4e0;
+  border: 1px solid #f3d19c;
+}
+
+/* Draggable modals (Modal draggable prop) — desktop/mouse only, matching
+   DRAG_MEDIA_QUERY in src/lib/drag.js. */
+@media (min-width: 901px) and (pointer: fine) {
+  .modal-header-draggable {
+    cursor: grab;
+    user-select: none;
+  }
+
+  .modal-header-draggable.dragging {
+    cursor: grabbing;
+  }
+
+  .modal-header-draggable .modal-close {
+    cursor: pointer;
+  }
+}
+
 /* =========================
    TRANSFERS
 ========================= */
