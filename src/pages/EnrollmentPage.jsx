@@ -118,7 +118,7 @@ export default function EnrollmentPage({
       </div>
 
       {showForm && (
-        <Modal title={editingStudent ? "Edit Student" : "New Student"} onClose={onCancel}>
+        <Modal title={editingStudent ? "Edit Student" : "New Student"} onClose={onCancel} draggable>
           <form className="form-grid" onSubmit={onSave}>
             <ErrorBanner error={formError} />
             <Input label="Student ID" value={form.id} onChange={(v) => set({ id: v })} required />

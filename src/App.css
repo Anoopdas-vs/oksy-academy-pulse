@@ -1181,6 +1181,23 @@ tfoot td {
   padding: 20px;
 }
 
+/* Draggable modals (Modal draggable prop) — desktop/mouse only, matching
+   DRAG_MEDIA_QUERY in src/lib/drag.js. */
+@media (min-width: 901px) and (pointer: fine) {
+  .modal-header-draggable {
+    cursor: grab;
+    user-select: none;
+  }
+
+  .modal-header-draggable.dragging {
+    cursor: grabbing;
+  }
+
+  .modal-header-draggable .modal-close {
+    cursor: pointer;
+  }
+}
+
 /* =========================
    TRANSFERS
 ========================= */
