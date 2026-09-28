@@ -1957,6 +1957,11 @@ tfoot td {
    PRINT
 ========================= */
 
+@page {
+  size: 10.5cm 29.7cm;
+  margin: 0.4cm;
+}
+
 @media print {
   body {
     background: white;
@@ -1999,14 +2004,25 @@ tfoot td {
     position: absolute;
     left: 0;
     top: 0;
-    width: 100%;
+    width: 10.5cm;
     border: none !important;
     box-shadow: none !important;
   }
 
   .print-area table {
     min-width: 0;
+    table-layout: fixed;
     font-size: 10px;
+  }
+
+  .print-area table td,
+  .print-area table th {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .rcpt {
+    padding: 10px 12px;
   }
 
   .row-actions,

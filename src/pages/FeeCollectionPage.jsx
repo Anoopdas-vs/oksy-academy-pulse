@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { ErrorBanner, Input, LockedValue, Modal } from "../components/ui.jsx";
-import { formatMoney } from "../lib/format.js";
+import { formatMoney, receiptNo } from "../lib/format.js";
 import { SearchBox, Pager } from "../components/SearchPager.jsx";
 import { usePagedList } from "../lib/usePagedList.js";
 import { downloadTemplate } from "../lib/templates.js";
@@ -9,7 +9,6 @@ import StudentPicker from "../components/StudentPicker.jsx";
 
 const ACCOUNTS = ["HDFC", "ICICI", "Cash", "Healthcare"];
 const TYPES = ["Registration Fee", "Course Fee", "Exam Fee", "Other Fee"];
-const receiptNo = (id) => `OKSY/${String(id).padStart(6, "0")}`;
 
 export default function FeeCollectionPage({
   students,
@@ -61,8 +60,8 @@ export default function FeeCollectionPage({
       <div className="page-actions">
         <button className="button secondary" onClick={() => downloadTemplate(
           "fee_collection_template.xlsx",
-          ["Student ID", "Date", "Type", "Payment A/C", "Amount", "Reference"],
-          ["DBHM001", "2026-06-01", "Course Fee", "HDFC", 20000, "HDFC-002"]
+          ["Receipt No", "Student ID", "Date", "Type", "Payment A/C", "Amount", "Reference"],
+          ["", "DBHM001", "2026-06-01", "Course Fee", "HDFC", 20000, "HDFC-002"]
         )}>
           Download Template
         </button>

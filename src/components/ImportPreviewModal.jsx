@@ -14,12 +14,22 @@ export default function ImportPreviewModal({
   onCancel,
   busy,
 }) {
+  // `mode` is only set by the Fee Collection / Expenses import parsers
+  // (a row with a Receipt No / Expense ID overwrites an existing record
+  // instead of adding a new one) — undefined everywhere else, so this
+  // stays invisible for Students/Transfers imports.
+  const hasUpdateMode = validRows.some((r) => r.mode === "update") || invalidRows.some((r) => r.mode === "update");
+  const updateCount = validRows.filter((r) => r.mode === "update").length;
+  const insertCount = validRows.length - updateCount;
+
   return (
     <Modal title={title} onClose={onCancel}>
       <div className="import-preview">
         <div className="import-summary">
           <span className="import-ok">
-            {validRows.length} row{validRows.length === 1 ? "" : "s"} ready to import
+            {hasUpdateMode
+              ? `${insertCount} new · ${updateCount} update${updateCount === 1 ? "" : "s"} ready to import`
+              : `${validRows.length} row${validRows.length === 1 ? "" : "s"} ready to import`}
           </span>
           {invalidRows.length > 0 && (
             <span className="import-bad">
@@ -35,6 +45,7 @@ export default function ImportPreviewModal({
               <thead>
                 <tr>
                   <th>Row</th>
+                  {hasUpdateMode && <th>Action</th>}
                   {columns.map((c) => (
                     <th key={c}>{c}</th>
                   ))}
@@ -45,6 +56,7 @@ export default function ImportPreviewModal({
                 {invalidRows.slice(0, 50).map((r) => (
                   <tr key={r.rowNumber}>
                     <td>{r.rowNumber}</td>
+                    {hasUpdateMode && <td>{r.mode === "update" ? "Update" : "New"}</td>}
                     {columns.map((c) => (
                       <td key={c}>{String(r.preview[c] ?? "")}</td>
                     ))}
@@ -66,6 +78,7 @@ export default function ImportPreviewModal({
               <thead>
                 <tr>
                   <th>Row</th>
+                  {hasUpdateMode && <th>Action</th>}
                   {columns.map((c) => (
                     <th key={c}>{c}</th>
                   ))}
@@ -75,6 +88,7 @@ export default function ImportPreviewModal({
                 {validRows.slice(0, 50).map((r) => (
                   <tr key={r.rowNumber}>
                     <td>{r.rowNumber}</td>
+                    {hasUpdateMode && <td>{r.mode === "update" ? "Update" : "New"}</td>}
                     {columns.map((c) => (
                       <td key={c}>{String(r.preview[c] ?? "")}</td>
                     ))}
