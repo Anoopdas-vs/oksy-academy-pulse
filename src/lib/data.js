@@ -194,6 +194,35 @@ export async function deleteBatch(id) {
   if (error) throw error;
 }
 
+// -------- Courses (migration 23) --------
+
+export async function fetchCourses() {
+  const { data, error } = await supabase
+    .from("courses")
+    .select("*")
+    .order("code", { ascending: true });
+  if (error) throw error;
+  return data || [];
+}
+
+export async function insertCourse(course, userId) {
+  const { error } = await supabase.from("courses").insert({ ...course, created_by: userId });
+  if (error) throw error;
+}
+
+export async function updateCourse(id, patch) {
+  const { error } = await supabase
+    .from("courses")
+    .update({ ...patch, updated_at: new Date().toISOString() })
+    .eq("id", id);
+  if (error) throw error;
+}
+
+export async function deleteCourse(id) {
+  const { error } = await supabase.from("courses").delete().eq("id", id);
+  if (error) throw error;
+}
+
 // -------- Expense categories --------
 
 export async function fetchExpenseCategories() {

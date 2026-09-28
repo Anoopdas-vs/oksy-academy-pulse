@@ -48,6 +48,10 @@ import {
   insertBatch,
   updateBatch,
   deleteBatch,
+  fetchCourses,
+  insertCourse,
+  updateCourse,
+  deleteCourse,
   fetchExpenseCategories,
   insertExpenseCategory,
   renameExpenseCategory,
@@ -64,6 +68,9 @@ import {
   isPositiveNumber,
   isValidStatus,
   validateMoneyRow,
+  validateStudentPersonal,
+  preparePersonalFields,
+  STUDENT_PERSONAL_FIELDS,
 } from "./lib/validation.js";
 
 import Dashboard from "./pages/Dashboard.jsx";
@@ -287,6 +294,7 @@ function AppShell() {
   // loaded the first time that tab is opened rather than on every app load.
   const bankLoadedRef = useRef(false);
   const [batches, setBatches] = useState([]);
+  const [courses, setCourses] = useState([]);
   const [expenseCategories, setExpenseCategories] = useState([]);
   const [dataLoading, setDataLoading] = useState(true);
   const [dataError, setDataError] = useState("");
@@ -329,6 +337,7 @@ function AppShell() {
     waiver: "",
     status: "Registered",
     enrollment_date: today(),
+    ...Object.fromEntries(STUDENT_PERSONAL_FIELDS.map((f) => [f, ""])),
   };
   const [studentForm, setStudentForm] = useState(emptyStudentForm);
 
@@ -369,11 +378,12 @@ function AppShell() {
       const needCollections = access.financials || access.canOpen("Fee Collection");
       const needExpenses = access.financials || access.canOpen("Expenses");
 
-      const [studentRows, collectionRows, batchRows, expenseRows, categoryRows, settings] =
+      const [studentRows, collectionRows, batchRows, courseRows, expenseRows, categoryRows, settings] =
         await Promise.all([
           fetchStudents(),
           needCollections ? fetchCollections().catch(() => []) : Promise.resolve([]),
           fetchBatches().catch(() => []),
+          access.canOpen("Admin") ? fetchCourses().catch(() => []) : Promise.resolve([]),
           needExpenses ? fetchExpenses().catch(() => []) : Promise.resolve([]),
           needExpenses ? fetchExpenseCategories().catch(() => []) : Promise.resolve([]),
           fetchAppSettings().catch(() => ({})),
@@ -381,6 +391,7 @@ function AppShell() {
       setStudents(studentRows);
       setCollections(collectionRows);
       setBatches(batchRows);
+      setCourses(courseRows);
       setExpenses(expenseRows);
       setExpenseCategories(categoryRows);
       setAppSettings(settings || {});
@@ -539,6 +550,9 @@ function AppShell() {
       exam_fee: student.exam_fee || "",
       other_fee: student.other_fee || "",
       waiver: student.waiver || "",
+      // Personal fields are null on students enrolled before migration 24;
+      // controlled inputs need "".
+      ...Object.fromEntries(STUDENT_PERSONAL_FIELDS.map((f) => [f, student[f] ?? ""])),
     });
     setStudentFormError("");
     setShowStudentForm(true);
@@ -567,9 +581,15 @@ function AppShell() {
       setStudentFormError("Please enter a valid enrollment date.");
       return;
     }
+    const personalProblems = validateStudentPersonal(studentForm, { requireAll: !editingStudent });
+    if (personalProblems.length) {
+      setStudentFormError(personalProblems.join(" "));
+      return;
+    }
 
     const prepared = {
       ...studentForm,
+      ...preparePersonalFields(studentForm),
       registration_fee: Number(studentForm.registration_fee || 0),
       course_fee: Number(studentForm.course_fee || 0),
       exam_fee: Number(studentForm.exam_fee || 0),
@@ -750,6 +770,9 @@ function AppShell() {
     addBatch: (batch) => adminAction(() => insertBatch(batch, profile.id)),
     editBatch: (id, patch) => adminAction(() => updateBatch(id, patch)),
     removeBatch: (id) => adminAction(() => deleteBatch(id)),
+    addCourse: (course) => adminAction(() => insertCourse(course, profile.id)),
+    editCourse: (id, patch) => adminAction(() => updateCourse(id, patch)),
+    removeCourse: (id) => adminAction(() => deleteCourse(id)),
     addCategory: (name) => adminAction(() => insertExpenseCategory(name, profile.id)),
     renameCategory: (id, name) => adminAction(() => renameExpenseCategory(id, name)),
     removeCategory: (id) => adminAction(() => deleteExpenseCategory(id)),
@@ -1565,6 +1588,7 @@ function AppShell() {
         {activeTab === "Admin" && (
           <AdminPage
             batches={batches}
+            courses={courses}
             categories={expenseCategories}
             expenses={expenses}
             busy={adminBusy}

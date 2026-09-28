@@ -9,6 +9,7 @@ import {
   ROLE_LABEL,
   resolveRoleAreas,
 } from "../lib/access.js";
+import { friendlyError, normalizeCourseCode } from "../lib/validation.js";
 
 const emptyBatch = {
   name: "",
@@ -20,10 +21,13 @@ const emptyBatch = {
   notes: "",
 };
 
-const TAB_LABEL = { batches: "Batches", categories: "Categories", users: "Users", access: "Access" };
+const emptyCourse = { code: "", name: "" };
+
+const TAB_LABEL = { batches: "Batches", courses: "Courses", categories: "Categories", users: "Users", access: "Access" };
 
 export default function AdminPage({
   batches,
+  courses = [],
   categories,
   expenses,
   busy,
@@ -33,7 +37,7 @@ export default function AdminPage({
   canDelete = false,
   roleAreas,
 }) {
-  const tabs = ["batches", "categories"];
+  const tabs = ["batches", "courses", "categories"];
   if (canManageUsers) tabs.push("users");
   if (canManageAccess) tabs.push("access");
   const [view, setView] = useState("batches");
@@ -55,6 +59,7 @@ export default function AdminPage({
       </div>
 
       {view === "batches" && <Batches batches={batches} busy={busy} actions={actions} canDelete={canDelete} />}
+      {view === "courses" && <Courses courses={courses} busy={busy} actions={actions} canDelete={canDelete} />}
       {view === "categories" && (
         <Categories categories={categories} expenses={expenses} busy={busy} actions={actions} canDelete={canDelete} />
       )}
@@ -232,6 +237,104 @@ function Batches({ batches, busy, actions, canDelete }) {
                       onClick={() => {
                         if (window.confirm(`Delete batch "${b.name}"? Students already enrolled keep their batch label.`)) {
                           actions.removeBatch(b.id);
+                        }
+                      }}
+                    >
+                      Delete
+                    </button>
+                  )}
+                  {!canDelete && <span className="muted-hint">—</span>}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+/* -------------------------------- Courses -------------------------------- */
+
+function Courses({ courses, busy, actions, canDelete }) {
+  const [form, setForm] = useState(emptyCourse);
+  const [editing, setEditing] = useState(null);
+  const [error, setError] = useState("");
+  const set = (patch) => setForm({ ...form, ...patch });
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setError("");
+    const code = normalizeCourseCode(form.code);
+    // Code is nullable in the database (migration 23) for courses that
+    // predate it, but every course created from here must have one.
+    if (!code && !editing) return setError("Course code is required.");
+    if (!form.name.trim()) return setError("Course name is required.");
+    const payload = { code: code || null, name: form.name.trim() };
+    try {
+      if (editing) await actions.editCourse(editing, payload);
+      else await actions.addCourse(payload);
+      setForm(emptyCourse);
+      setEditing(null);
+    } catch (err) {
+      setError(friendlyError(err));
+    }
+  };
+
+  const startEdit = (c) => {
+    setEditing(c.id);
+    setForm({ code: c.code || "", name: c.name || "" });
+  };
+
+  return (
+    <div className="two-column">
+      <div className="form-card">
+        <h3>{editing ? "Edit Course" : "New Course"}</h3>
+        <form onSubmit={submit}>
+          <ErrorBanner error={error} />
+          <Input
+            label="Course Code"
+            placeholder="e.g. DBHM"
+            value={form.code}
+            onChange={(v) => set({ code: v.toUpperCase() })}
+            required={!editing}
+          />
+          <Input label="Course name" value={form.name} onChange={(v) => set({ name: v })} required />
+          <div className="form-actions">
+            {editing && (
+              <button type="button" className="button secondary" onClick={() => { setEditing(null); setForm(emptyCourse); }}>
+                Cancel
+              </button>
+            )}
+            <button className="button primary" type="submit" disabled={busy}>
+              {busy ? "Saving..." : editing ? "Update Course" : "Add Course"}
+            </button>
+          </div>
+        </form>
+      </div>
+
+      <div className="table-card">
+        <div className="card-heading"><div><h3>Courses</h3><p>Short course codes used across the academy</p></div></div>
+        <table>
+          <thead>
+            <tr><th>Code</th><th>Name</th><th></th></tr>
+          </thead>
+          <tbody>
+            {courses.length === 0 && <tr><td colSpan={3} className="table-empty">No courses yet.</td></tr>}
+            {courses.map((c) => (
+              <tr key={c.id}>
+                <td><strong>{c.code || "—"}</strong></td>
+                <td>{c.name}</td>
+                <td className="row-actions">
+                  {canDelete && (
+                    <button className="button secondary small" onClick={() => startEdit(c)}>Edit</button>
+                  )}
+                  {canDelete && (
+                    <button
+                      className="button ghost small danger"
+                      onClick={() => {
+                        if (window.confirm(`Delete course "${c.code || c.name}"?`)) {
+                          actions.removeCourse(c.id);
                         }
                       }}
                     >
