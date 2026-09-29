@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { ErrorBanner, StatusBadge, Input, Modal } from "../components/ui.jsx";
 import { formatMoney } from "../lib/format.js";
 import { SearchBox, Pager } from "../components/SearchPager.jsx";
@@ -6,13 +6,19 @@ import { usePagedList } from "../lib/usePagedList.js";
 import { downloadTemplate } from "../lib/templates.js";
 import { GUARDIAN_RELATIONS } from "../lib/validation.js";
 import { enrollmentPatchForBatch } from "../lib/batches.js";
+import { canOfferStudentDelete } from "../lib/studentId.js";
+import { previewStudentId } from "../lib/data.js";
 
 export default function EnrollmentPage({
   students,
   batches = [],
+  collections = [],
+  notice = "",
   onFileSelected,
   onNew,
   onEdit,
+  canDelete = false,
+  onDelete,
   showForm,
   editingStudent,
   form,
@@ -32,6 +38,38 @@ export default function EnrollmentPage({
     const b = batches.find((x) => x.name === name);
     set({ batch: name, ...enrollmentPatchForBatch(b, form, { isNew: !editingStudent }) });
   };
+
+  // Read-only preview of the ID a new enrolment will get (the database
+  // allocates the real one at save). { id } | { error } | null.
+  const isNew = showForm && !editingStudent;
+  // Keyed by batch so a result for a previously picked batch is ignored.
+  const [fetchedPreview, setFetchedPreview] = useState(null);
+  useEffect(() => {
+    if (!isNew || !form.batch) return undefined;
+    let stale = false;
+    const batch = form.batch;
+    previewStudentId(batch)
+      .then((id) => !stale && setFetchedPreview({ batch, id }))
+      .catch((err) => !stale && setFetchedPreview({ batch, error: err?.message || "Couldn't work out the Student ID." }));
+    return () => {
+      stale = true;
+    };
+  }, [isNew, form.batch]);
+  const idPreview = !isNew || !form.batch
+    ? null
+    : fetchedPreview?.batch === form.batch
+      ? fetchedPreview
+      : { loading: true };
+
+  const idFieldValue = editingStudent
+    ? editingStudent.id
+    : idPreview?.id || (idPreview?.loading ? "Working out…" : form.batch ? "—" : "Choose a batch first");
+
+  const studentsWithReceipts = useMemo(
+    () => new Set(collections.map((c) => c.student_id)),
+    [collections]
+  );
+
   const paged = usePagedList(students, {
     searchFields: ["id", "name", "course", "batch", "student_phone", "parent_name", "place"],
     pageSize: 20,
@@ -39,6 +77,7 @@ export default function EnrollmentPage({
 
   return (
     <section className="page">
+      {notice && <div className="auth-message notice page-error">{notice}</div>}
       <div className="toolbar">
         <SearchBox
           value={paged.query}
@@ -107,7 +146,21 @@ export default function EnrollmentPage({
                 <td>{formatMoney(s.waiver)}</td>
                 <td><StatusBadge status={s.status} /></td>
                 <td>{s.enrollment_date}</td>
-                <td><button className="edit-button" onClick={() => onEdit(s)}>Edit</button></td>
+                <td className="row-actions">
+                  <button className="edit-button" onClick={() => onEdit(s)}>Edit</button>
+                  {canOfferStudentDelete(s, { isAdmin: canDelete, hasReceipts: studentsWithReceipts.has(s.id) }) && (
+                    <button
+                      className="button ghost small danger"
+                      onClick={() => {
+                        if (window.confirm(`Delete ${s.id} (${s.name})? Only for an enrolment made by mistake — this cannot be undone. For a student who left, set the status to Dropped instead.`)) {
+                          onDelete(s);
+                        }
+                      }}
+                    >
+                      Delete
+                    </button>
+                  )}
+                </td>
               </tr>
             ))}
           </tbody>
@@ -118,7 +171,6 @@ export default function EnrollmentPage({
         <Modal title={editingStudent ? "Edit Student" : "New Student"} onClose={onCancel} draggable>
           <form className="form-grid" onSubmit={onSave}>
             <ErrorBanner error={formError} />
-            <Input label="Student ID" value={form.id} onChange={(v) => set({ id: v })} required />
             <div className="field">
               <label>Batch</label>
               {batches.length > 0 ? (
@@ -133,6 +185,17 @@ export default function EnrollmentPage({
                 <input value={form.batch} onChange={(e) => set({ batch: e.target.value })} />
               )}
             </div>
+            {/* Never typed: new IDs come from the database (course code +
+                next number) and existing IDs never change. */}
+            <Input
+              label={editingStudent ? "Student ID" : "Student ID (assigned on save)"}
+              value={idFieldValue}
+              onChange={() => {}}
+              readOnly
+              aria-readonly="true"
+              title={editingStudent ? "Student IDs never change." : "Preview only — the final ID is assigned when you save."}
+            />
+            {isNew && idPreview?.error && <ErrorBanner error={idPreview.error} />}
             <Input label="Student Name" value={form.name} onChange={(v) => set({ name: v })} required />
             <Input label="Course" value={form.course} onChange={(v) => set({ course: v })} />
             {/* New enrollments must fill the four starred fields; students
@@ -169,7 +232,7 @@ export default function EnrollmentPage({
             <Input label="Enrollment Date" type="date" value={form.enrollment_date} onChange={(v) => set({ enrollment_date: v })} />
             <div className="form-actions">
               <button type="button" className="button secondary" onClick={onCancel} disabled={saving}>Cancel</button>
-              <button type="submit" className="button primary" disabled={saving}>
+              <button type="submit" className="button primary" disabled={saving || (isNew && !!idPreview?.error)}>
                 {saving ? "Saving..." : "Save Student"}
               </button>
             </div>

@@ -11,26 +11,43 @@ export async function fetchStudents() {
   return data || [];
 }
 
-export async function upsertStudent(student, userId) {
-  const payload = {
-    ...student,
-    updated_at: new Date().toISOString(),
-    updated_by: userId,
-  };
-
-  const { error } = await supabase.from("students").upsert(payload, {
-    onConflict: "id",
-  });
+// Edits an existing student. `id` is never sent: Student IDs are immutable
+// (migration 26 trigger), and an upsert with a changed id would have
+// silently created a second student.
+export async function updateStudent(id, student, userId) {
+  const fields = { ...student };
+  delete fields.id;
+  delete fields.created_at;
+  delete fields.created_by;
+  const { error } = await supabase
+    .from("students")
+    .update({ ...fields, updated_at: new Date().toISOString(), updated_by: userId })
+    .eq("id", id);
   if (error) throw error;
 }
 
-export async function insertNewStudent(student, userId) {
-  const payload = {
-    ...student,
-    created_by: userId,
-    updated_by: userId,
-  };
-  const { error } = await supabase.from("students").insert(payload);
+// New enrolment. The database allocates the Student ID (course code +
+// next number, under a per-prefix lock) and returns it — see migration 26.
+export async function enrollStudent(student) {
+  const fields = { ...student };
+  delete fields.id;
+  const { data, error } = await supabase.rpc("enroll_student", { p_student: fields });
+  if (error) throw error;
+  return data;
+}
+
+// The ID the next enrolment into `batch` would get. Preview only — the final
+// ID is allocated at save and can differ if someone enrols first.
+export async function previewStudentId(batch) {
+  const { data, error } = await supabase.rpc("preview_student_id", { p_batch: batch });
+  if (error) throw error;
+  return data;
+}
+
+// Owner/Admin only; the RPC refuses unless the student is Registered and has
+// no receipts or linked login.
+export async function deleteMistakenStudent(id) {
+  const { error } = await supabase.rpc("delete_mistaken_student", { p_id: id });
   if (error) throw error;
 }
 

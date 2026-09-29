@@ -21,8 +21,9 @@ import { autoMatch } from "./lib/reconcile.js";
 import { getAccess } from "./lib/access.js";
 import {
   fetchStudents,
-  insertNewStudent,
-  upsertStudent,
+  enrollStudent,
+  updateStudent,
+  deleteMistakenStudent,
   bulkUpsertStudents,
   fetchCollections,
   insertCollection,
@@ -309,6 +310,8 @@ function AppShell() {
   const [period, setPeriod] = useState({ preset: "all", start: "", end: "" });
 
   const [showStudentForm, setShowStudentForm] = useState(false);
+  // "Enrolled as DBHM117" / "Deleted …" after a student save or delete.
+  const [studentNotice, setStudentNotice] = useState("");
   const [editingStudent, setEditingStudent] = useState(null);
 
   const [savingStudent, setSavingStudent] = useState(false);
@@ -562,15 +565,14 @@ function AppShell() {
     e.preventDefault();
     setStudentFormError("");
 
-    if (isBlank(studentForm.id) || isBlank(studentForm.name)) {
-      setStudentFormError("Student ID and Name are required.");
+    // New students get their ID from the database (course code of the
+    // batch + next number), so a batch is required; the ID is never typed.
+    if (!editingStudent && isBlank(studentForm.batch)) {
+      setStudentFormError("Choose a batch first — the Student ID is assigned from its course code.");
       return;
     }
-    const duplicate =
-      !editingStudent &&
-      students.some((s) => s.id.toLowerCase() === studentForm.id.toLowerCase());
-    if (duplicate) {
-      setStudentFormError("Student ID already exists.");
+    if (isBlank(studentForm.name)) {
+      setStudentFormError("Student Name is required.");
       return;
     }
     if (!isValidStatus(studentForm.status)) {
@@ -601,7 +603,7 @@ function AppShell() {
     // so their outstanding balance becomes zero.
     if (prepared.status === "Dropped") {
       const collectedSoFar = collections
-        .filter((c) => c.student_id === prepared.id)
+        .filter((c) => editingStudent && c.student_id === editingStudent.id)
         .reduce((sum, c) => sum + Number(c.amount || 0), 0);
       prepared.waiver = waiverForDrop(prepared, collectedSoFar);
     }
@@ -609,9 +611,11 @@ function AppShell() {
     setSavingStudent(true);
     try {
       if (editingStudent) {
-        await upsertStudent(prepared, profile.id);
+        await updateStudent(editingStudent.id, prepared, profile.id);
+        setStudentNotice("");
       } else {
-        await insertNewStudent(prepared, profile.id);
+        const newId = await enrollStudent(prepared);
+        setStudentNotice(`${prepared.name.trim()} enrolled as ${newId}.`);
       }
       setShowStudentForm(false);
       await loadData();
@@ -619,6 +623,19 @@ function AppShell() {
       setStudentFormError(friendlyError(err));
     } finally {
       setSavingStudent(false);
+    }
+  };
+
+  // Mistake correction only. The page offers it to admins for Registered
+  // students without receipts; the RPC enforces the full rule.
+  const deleteStudent = async (student) => {
+    setStudentNotice("");
+    try {
+      await deleteMistakenStudent(student.id);
+      setStudentNotice(`Deleted ${student.id} (${student.name}).`);
+      await loadData();
+    } catch (err) {
+      setDataError(friendlyError(err));
     }
   };
 
@@ -1571,10 +1588,14 @@ function AppShell() {
           <EnrollmentPage
             students={students}
             batches={batches}
+            collections={collections}
             loading={dataLoading}
+            notice={studentNotice}
             onFileSelected={handleStudentFile}
             onNew={openNewStudent}
             onEdit={editStudent}
+            canDelete={isAdmin}
+            onDelete={deleteStudent}
             showForm={showStudentForm}
             editingStudent={editingStudent}
             form={studentForm}
