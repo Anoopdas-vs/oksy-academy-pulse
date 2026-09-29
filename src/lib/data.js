@@ -51,16 +51,17 @@ export async function deleteMistakenStudent(id) {
   if (error) throw error;
 }
 
-export async function bulkUpsertStudents(students, userId) {
-  const payload = students.map((s) => ({
-    ...s,
-    created_by: userId,
-    updated_by: userId,
-  }));
-  const { error } = await supabase
-    .from("students")
-    .upsert(payload, { onConflict: "id" });
+// Owner/Admin only (enforced inside the RPC, migration 27). One transaction:
+// with dryRun the database validates and returns the preview without writing;
+// otherwise every row is applied or none is. `rows` are studentBulk.js records.
+export async function bulkUpsertStudents(rows, { dryRun = true, confirmBlanks = false } = {}) {
+  const { data, error } = await supabase.rpc("bulk_upsert_students", {
+    p_rows: rows,
+    p_dry_run: dryRun,
+    p_confirm_blanks: confirmBlanks,
+  });
   if (error) throw error;
+  return data;
 }
 
 // -------- Fee collections --------

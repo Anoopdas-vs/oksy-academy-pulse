@@ -1,6 +1,7 @@
 import { inRange } from "./period.js";
 import { grossFee, effectiveFeeDue, outstanding, creditBalance } from "./fees.js";
 import { receiptNo, expenseCode } from "./format.js";
+import { STUDENT_BULK_COLUMNS } from "./studentBulk.js";
 
 const sum = (rows, f = (r) => r.amount) => rows.reduce((s, r) => s + Number(f(r) || 0), 0);
 const within = (rows, range) => (range ? rows.filter((r) => inRange(r.date, range)) : rows);
@@ -211,6 +212,32 @@ export const REPORTS = [
   },
 
   {
+    // Admin-only (not in STAFF_REPORT_IDS): bulk contact details. Its column
+    // labels are the upload template (studentBulk.js) — edit, then Upload
+    // Excel on the Enrollment page. Not period-filtered: it is a roster.
+    id: "students",
+    name: "Students",
+    description: "Full student roster with contact details and fees. Same columns as the Enrollment upload template.",
+    downloadable: true,
+    sortable: true,
+    filters: [
+      { key: "course", label: "Course", optionsFrom: ({ students }) => ["All", ...uniqueSorted(students.map((s) => s.course))] },
+      { key: "batch", label: "Batch", optionsFrom: ({ students }) => ["All", ...uniqueSorted(students.map((s) => s.batch))] },
+      { key: "status", label: "Status", options: ["All", "Registered", "Active", "Completed", "Dropped"] },
+    ],
+    build({ students }, f) {
+      let list = students;
+      if (f.course && f.course !== "All") list = list.filter((s) => s.course === f.course);
+      if (f.batch && f.batch !== "All") list = list.filter((s) => s.batch === f.batch);
+      if (f.status && f.status !== "All") list = list.filter((s) => s.status === f.status);
+      const rows = list
+        .map((s) => Object.fromEntries(STUDENT_BULK_COLUMNS.map((c) => [c.key, s[c.key] ?? (c.money ? 0 : "")])))
+        .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+      return { columns: STUDENT_BULK_COLUMNS, rows, summary: `${rows.length} student(s)` };
+    },
+  },
+
+  {
     id: "transfers",
     name: "Transfers",
     description: "Account-to-account movements in the period.",
@@ -289,6 +316,10 @@ export const REPORTS = [
     },
   },
 ];
+
+function uniqueSorted(values) {
+  return [...new Set(values.filter((v) => v && String(v).trim()))].sort((a, b) => String(a).localeCompare(String(b)));
+}
 
 function fmt(n) {
   return new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 }).format(n || 0);
