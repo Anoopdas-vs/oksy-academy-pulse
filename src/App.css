@@ -1597,6 +1597,34 @@ tfoot td {
   color: var(--danger);
 }
 
+.import-warn {
+  background: var(--warning-bg, #fff4e0);
+  color: var(--warning, #9a6200);
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.import-warning {
+  color: var(--warning, #9a6200);
+}
+
+.import-messages {
+  white-space: normal;
+  min-width: 260px;
+}
+
+.import-confirm {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  font-size: 11px;
+  background: var(--warning-bg, #fff4e0);
+  border-radius: 8px;
+  padding: 10px;
+}
+
 .import-more {
   font-size: 10px;
   color: var(--muted);
@@ -2872,3 +2900,13 @@ tfoot td {
   font-size: 9.5px;
   color: var(--muted);
 }
+
+.th-sort {
+  all: unset;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+  text-transform: inherit;
+  letter-spacing: inherit;
+}
+.th-sort:focus-visible { outline: 2px solid var(--accent, #2563eb); outline-offset: 2px; }

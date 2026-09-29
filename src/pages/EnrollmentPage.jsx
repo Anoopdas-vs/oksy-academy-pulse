@@ -4,6 +4,8 @@ import { formatMoney } from "../lib/format.js";
 import { SearchBox, Pager } from "../components/SearchPager.jsx";
 import { usePagedList } from "../lib/usePagedList.js";
 import { downloadTemplate } from "../lib/templates.js";
+import StudentBulkUpload from "../components/StudentBulkUpload.jsx";
+import { STUDENT_BULK_HEADERS, STUDENT_BULK_SAMPLE_ROW } from "../lib/studentBulk.js";
 import { GUARDIAN_RELATIONS } from "../lib/validation.js";
 import { enrollmentPatchForBatch } from "../lib/batches.js";
 import { canOfferStudentDelete } from "../lib/studentId.js";
@@ -14,7 +16,8 @@ export default function EnrollmentPage({
   batches = [],
   collections = [],
   notice = "",
-  onFileSelected,
+  canBulkUpload = false,
+  onBulkApplied,
   onNew,
   onEdit,
   canDelete = false,
@@ -92,17 +95,17 @@ export default function EnrollmentPage({
           totalCount={paged.totalCount}
         />
         <div className="toolbar-actions">
-          <button className="button secondary" onClick={() => downloadTemplate(
-            "student_enrollment_template.xlsx",
-            ["Student ID", "Batch", "Name", "Course", "Registration Fee", "Course Fee", "Exam Fee", "Other Fee", "Waiver", "Status", "Enrollment Date"],
-            ["DBHM002", "2026-B", "Jane Doe", "Hospital Administration", 5000, 45000, 2000, 0, 0, "Registered", "2026-06-01"]
-          )}>
-            Download Template
-          </button>
-          <label className="button secondary">
-            Import Excel
-            <input type="file" accept=".xlsx,.xls,.csv" onChange={onFileSelected} hidden />
-          </label>
+          {canBulkUpload && (
+            <>
+              {/* Same headers as Reports > Students, so download -> edit -> upload round-trips. */}
+              <button className="button secondary" onClick={() => downloadTemplate(
+                "student_upload_template.xlsx", STUDENT_BULK_HEADERS, STUDENT_BULK_SAMPLE_ROW
+              )}>
+                Download Template
+              </button>
+              <StudentBulkUpload onApplied={onBulkApplied} />
+            </>
+          )}
           <button className="button primary" onClick={onNew}>+ Add Student</button>
         </div>
       </div>

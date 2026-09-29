@@ -24,7 +24,6 @@ import {
   enrollStudent,
   updateStudent,
   deleteMistakenStudent,
-  bulkUpsertStudents,
   fetchCollections,
   insertCollection,
   bulkInsertCollections,
@@ -1076,69 +1075,6 @@ function AppShell() {
     setImportPreview({ type, title, columns, validRows, invalidRows, committing: false });
   };
 
-  const handleStudentFile = (event) => {
-    const file = event.target.files[0];
-    if (!file) return;
-
-    readWorkbookRows(file, (rows) => {
-      const seenIds = new Set();
-      const parsed = rows.map((row, idx) => {
-        const rowNumber = idx + 2;
-        const id = row["Student ID"] || row["studentId"] || row["ID"];
-        const name = row["Name"] || row["name"];
-        const problems = [];
-
-        if (isBlank(id)) problems.push("Missing Student ID");
-        if (isBlank(name)) problems.push("Missing Name");
-        if (!isBlank(id)) {
-          const key = String(id).toLowerCase();
-          if (seenIds.has(key)) problems.push("Duplicate Student ID within this file");
-          seenIds.add(key);
-        }
-
-        const enrollment_date = parseExcelDate(row["Enrollment Date"]) || today();
-        const status = row["Status"] || "Registered";
-
-        const preview = {
-          "Student ID": id ?? "",
-          Name: name ?? "",
-          Batch: row["Batch"] || "",
-          Course: row["Course"] || row["Courses"] || "",
-          Status: status,
-          "Enrollment Date": enrollment_date,
-        };
-
-        const record =
-          problems.length === 0
-            ? {
-                id: String(id),
-                batch: row["Batch"] || "",
-                name: String(name),
-                course: row["Course"] || row["Courses"] || "",
-                registration_fee: Number(row["Registration Fee"] || 0),
-                course_fee: Number(row["Course Fee"] || 0),
-                exam_fee: Number(row["Exam Fee"] || 0),
-                other_fee: Number(row["Other Fee"] || 0),
-                waiver: Number(row["Waiver"] || 0),
-                status,
-                enrollment_date,
-              }
-            : null;
-
-        return { rowNumber, preview, problems, record };
-      });
-
-      openImportPreview(
-        "students",
-        "Import Students — Review",
-        ["Student ID", "Name", "Batch", "Course", "Status", "Enrollment Date"],
-        parsed
-      );
-    });
-
-    event.target.value = "";
-  };
-
   const handleCollectionFile = (event) => {
     const file = event.target.files[0];
     if (!file) return;
@@ -1392,9 +1328,7 @@ function AppShell() {
     const validRows = importPreview.validRows;
     const records = validRows.map((r) => r.record);
     try {
-      if (importPreview.type === "students") {
-        await bulkUpsertStudents(records, profile.id);
-      } else if (importPreview.type === "collections") {
+      if (importPreview.type === "collections") {
         const inserts = validRows.filter((r) => r.mode !== "update");
         const updates = validRows.filter((r) => r.mode === "update");
         if (inserts.length) await bulkInsertCollections(inserts.map((r) => r.record), profile.id);
@@ -1591,7 +1525,8 @@ function AppShell() {
             collections={collections}
             loading={dataLoading}
             notice={studentNotice}
-            onFileSelected={handleStudentFile}
+            canBulkUpload={isAdmin}
+            onBulkApplied={loadData}
             onNew={openNewStudent}
             onEdit={editStudent}
             canDelete={isAdmin}

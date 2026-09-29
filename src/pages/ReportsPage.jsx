@@ -53,6 +53,7 @@ function ReportView({ report, data, range, periodLabel, onBack }) {
     Object.fromEntries(filterDefs.map((f) => [f.key, f.options[0]]))
   );
   const [query, setQuery] = useState("");
+  const [sort, setSort] = useState(null); // { key, dir } — only for reports with sortable: true
 
   const result = useMemo(
     () => report.build(data, filters, range),
@@ -60,12 +61,28 @@ function ReportView({ report, data, range, periodLabel, onBack }) {
   );
 
   const rows = useMemo(() => {
-    if (!query.trim()) return result.rows;
-    const q = query.toLowerCase();
-    return result.rows.filter((r) =>
-      result.columns.some((c) => String(r[c.key] ?? "").toLowerCase().includes(q))
-    );
-  }, [result, query]);
+    let out = result.rows;
+    if (query.trim()) {
+      const q = query.toLowerCase();
+      out = out.filter((r) =>
+        result.columns.some((c) => String(r[c.key] ?? "").toLowerCase().includes(q))
+      );
+    }
+    if (sort) {
+      const col = result.columns.find((c) => c.key === sort.key);
+      const dir = sort.dir === "desc" ? -1 : 1;
+      out = [...out].sort((a, b) => {
+        const x = a[sort.key] ?? "";
+        const y = b[sort.key] ?? "";
+        const cmp = col?.money ? Number(x) - Number(y) : String(x).localeCompare(String(y), undefined, { numeric: true });
+        return cmp * dir;
+      });
+    }
+    return out;
+  }, [result, query, sort]);
+
+  const toggleSort = (key) =>
+    setSort((cur) => (cur?.key === key ? (cur.dir === "asc" ? { key, dir: "desc" } : null) : { key, dir: "asc" }));
 
   const fileName = `${report.name.replace(/[^\w]+/g, "_")}_${periodLabel.replace(/[^\w]+/g, "_")}.xlsx`;
 
@@ -115,7 +132,23 @@ function ReportView({ report, data, range, periodLabel, onBack }) {
         </div>
         <table>
           <thead>
-            <tr>{result.columns.map((c) => <th key={c.key} className={c.money ? "ra" : ""}>{c.label}</th>)}</tr>
+            <tr>
+              {result.columns.map((c) =>
+                report.sortable ? (
+                  <th
+                    key={c.key}
+                    className={`${c.money ? "ra " : ""}sortable`}
+                    aria-sort={sort?.key === c.key ? (sort.dir === "asc" ? "ascending" : "descending") : "none"}
+                  >
+                    <button type="button" className="th-sort" onClick={() => toggleSort(c.key)}>
+                      {c.label}{sort?.key === c.key ? (sort.dir === "asc" ? " ▲" : " ▼") : ""}
+                    </button>
+                  </th>
+                ) : (
+                  <th key={c.key} className={c.money ? "ra" : ""}>{c.label}</th>
+                )
+              )}
+            </tr>
           </thead>
           <tbody>
             {rows.length === 0 && (
