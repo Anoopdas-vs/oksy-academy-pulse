@@ -45,6 +45,22 @@ describe("validateBatchForm", () => {
     assert.deepEqual(validateBatchForm(good, { courseNames }), []);
   });
 
+  test("end date before start date is rejected with a clear message", () => {
+    const problems = validateBatchForm({ ...good, start_date: "2026-09-03", end_date: "2026-03-02" }, { courseNames });
+    assert.deepEqual(problems, ["End date can't be before the start date."]);
+  });
+
+  test("end date equal to start date, or either date blank, is allowed", () => {
+    for (const dates of [
+      { start_date: "2026-09-03", end_date: "2026-09-03" },
+      { start_date: "2026-09-03", end_date: "" },
+      { start_date: "", end_date: "2026-03-02" },
+      { start_date: "", end_date: "" },
+    ]) {
+      assert.deepEqual(validateBatchForm({ ...good, ...dates }, { courseNames }), [], JSON.stringify(dates));
+    }
+  });
+
   test("new batch: bad name is rejected", () => {
     const problems = validateBatchForm({ ...good, name: "DBHM 2026" }, { courseNames });
     assert.equal(problems.length, 1);
