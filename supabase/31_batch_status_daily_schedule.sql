@@ -14,10 +14,11 @@
 -- moves that job instead of creating a second one, and re-running this file
 -- never creates a duplicate.
 --
--- Prerequisite: the pg_cron extension. 28b already ran
--- `create extension if not exists pg_cron`. If cron.job does not exist, enable
--- it first in the dashboard (Database -> Extensions -> search "pg_cron" ->
--- toggle on), then run this file.
+-- Prerequisite: pg_cron must be enabled first in Dashboard -> Database ->
+-- Extensions (search "pg_cron", toggle on). This file does not create the
+-- extension: if it is missing it stops with a clear message, changes nothing,
+-- and can be re-run after you enable it. On a project where 28b did not
+-- schedule the job, this migration creates it.
 --
 -- Why the job is allowed to run the function: run_batch_status_automation()
 -- accepts is_admin() OR (session_user = 'postgres' AND auth.uid() IS NULL).
@@ -38,7 +39,12 @@
 
 begin;
 
-create extension if not exists pg_cron;
+do $$
+begin
+  if not exists (select 1 from pg_extension where extname = 'pg_cron') then
+    raise exception 'pg_cron is not enabled. Enable it in Dashboard -> Database -> Extensions -> pg_cron, then re-run this migration.';
+  end if;
+end $$;
 
 select cron.schedule(
   'batch-auto-student-status',
