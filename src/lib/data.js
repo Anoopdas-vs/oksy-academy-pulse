@@ -64,6 +64,30 @@ export async function bulkUpsertStudents(rows, { dryRun = true, confirmBlanks = 
   return data;
 }
 
+// Owner/Admin only (enforced inside both RPCs, migration 28).
+// Read-only dry run, reverts included:
+// [{ student_id, student_name, batch, old_status, new_status, batch_start, batch_end, is_revert }].
+export async function previewBatchStatusChanges() {
+  const { data, error } = await supabase.rpc("preview_batch_status_changes");
+  if (error) throw error;
+  return data || [];
+}
+
+// Batches whose end date is before their start date (skipped by the rule).
+export async function batchStatusDataIssues() {
+  const { data, error } = await supabase.rpc("batch_status_data_issues");
+  if (error) throw error;
+  return data || [];
+}
+
+// Re-syncs every student's status with today's (IST) batch dates.
+// Returns { run_date, to_registered, to_active, to_completed, total }.
+export async function runBatchStatusAutomation() {
+  const { data, error } = await supabase.rpc("run_batch_status_automation");
+  if (error) throw error;
+  return data;
+}
+
 // -------- Fee collections --------
 
 // Always read the masked view, never the base table: collections_basic

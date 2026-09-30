@@ -2,6 +2,7 @@ import React, { useMemo, useState } from "react";
 import { ErrorBanner, Input, Modal } from "../components/ui.jsx";
 import { formatMoney } from "../lib/format.js";
 import StaffAccess from "../components/StaffAccess.jsx";
+import BatchStatusAutomation from "../components/BatchStatusAutomation.jsx";
 import {
   ALL_AREAS,
   CONFIGURABLE_ROLES,
@@ -26,7 +27,7 @@ const emptyBatch = {
 
 const emptyCourse = { code: "", name: "" };
 
-const TAB_LABEL = { batches: "Batches", courses: "Courses", categories: "Categories", users: "Users", access: "Access" };
+const TAB_LABEL = { batches: "Batches", courses: "Courses", categories: "Categories", users: "Users", access: "Access", autostatus: "Auto status" };
 
 export default function AdminPage({
   batches,
@@ -41,6 +42,7 @@ export default function AdminPage({
   roleAreas,
 }) {
   const tabs = ["batches", "courses", "categories"];
+  if (canDelete) tabs.push("autostatus");
   if (canManageUsers) tabs.push("users");
   if (canManageAccess) tabs.push("access");
   const [view, setView] = useState("batches");
@@ -68,6 +70,7 @@ export default function AdminPage({
       {view === "categories" && (
         <Categories categories={categories} expenses={expenses} busy={busy} actions={actions} canDelete={canDelete} />
       )}
+      {view === "autostatus" && canDelete && <BatchStatusAutomation />}
       {view === "users" && canManageUsers && <Users busy={busy} actions={actions} />}
       {view === "access" && canManageAccess && (
         <AccessConfig roleAreas={roleAreas} busy={busy} onSave={actions.saveAccess} />
