@@ -54,3 +54,16 @@ export function planStatusChanges(students, batches, today) {
   }
   return out.sort((a, b) => a.batch.localeCompare(b.batch) || a.student_id.localeCompare(b.student_id));
 }
+
+// Label for the Admin -> Batches list. No new rule: it asks batchStatusFor()
+// what an Active student of this batch would become today (Registered /
+// Active / Completed) and renames that for the batch itself. end < start is
+// the "Date issue" that batch_status_data_issues() reports; no start date
+// means the rule doesn't apply (null -> shown as "—").
+export const BATCH_STATUS_LABEL = { Registered: "Upcoming", Active: "Running", Completed: "Completed" };
+
+export function batchDisplayStatus(batch, today) {
+  if (!batch || !batch.start_date) return null;
+  if (batch.end_date && batch.end_date < batch.start_date) return "Date issue";
+  return BATCH_STATUS_LABEL[batchStatusFor("Active", batch, today)] ?? null;
+}

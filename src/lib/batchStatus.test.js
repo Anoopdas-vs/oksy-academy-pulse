@@ -2,7 +2,7 @@
 // Run directly with: node --test src/lib/batchStatus.test.js
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { istToday, batchStatusFor, planStatusChanges } from "./batchStatus.js";
+import { istToday, batchStatusFor, planStatusChanges, batchDisplayStatus } from "./batchStatus.js";
 
 const TODAY = "2026-09-29";
 const batch = (start_date, end_date) => ({ name: "B", start_date, end_date });
@@ -112,5 +112,31 @@ describe("planStatusChanges", () => {
       return c ? { ...s, status: c.new_status } : s;
     });
     assert.deepEqual(planStatusChanges(applied, batches, TODAY), []);
+  });
+});
+
+describe("batchDisplayStatus (Admin -> Batches column)", () => {
+  test("before start -> Upcoming; start day and after -> Running; end day and after -> Completed", () => {
+    assert.equal(batchDisplayStatus(batch("2026-09-30", "2027-01-01"), TODAY), "Upcoming");
+    assert.equal(batchDisplayStatus(batch("2026-09-29", "2027-01-01"), TODAY), "Running");
+    assert.equal(batchDisplayStatus(batch("2026-01-01", "2026-09-30"), TODAY), "Running");
+    assert.equal(batchDisplayStatus(batch("2026-01-01", "2026-09-29"), TODAY), "Completed");
+    assert.equal(batchDisplayStatus(batch("2026-01-01", "2026-03-01"), TODAY), "Completed");
+  });
+  test("no end date: Running once started, Upcoming before", () => {
+    assert.equal(batchDisplayStatus(batch("2026-01-01", null), TODAY), "Running");
+    assert.equal(batchDisplayStatus(batch("2026-10-01", null), TODAY), "Upcoming");
+  });
+  test("end before start -> Date issue; no start date -> null (not shown)", () => {
+    assert.equal(batchDisplayStatus(batch("2026-09-03", "2026-03-02"), TODAY), "Date issue");
+    assert.equal(batchDisplayStatus(batch(null, "2026-03-02"), TODAY), null);
+    assert.equal(batchDisplayStatus(batch("", ""), TODAY), null);
+    assert.equal(batchDisplayStatus(undefined, TODAY), null);
+  });
+  test("agrees with batchStatusFor for every valid batch", () => {
+    const map = { Registered: "Upcoming", Active: "Running", Completed: "Completed" };
+    for (const b of [batch("2026-09-30", "2027-01-01"), batch("2026-01-01", null), batch("2026-01-01", "2026-09-29")]) {
+      assert.equal(batchDisplayStatus(b, TODAY), map[batchStatusFor("Active", b, TODAY)]);
+    }
   });
 });

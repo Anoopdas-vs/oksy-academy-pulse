@@ -1,5 +1,5 @@
-// Unit tests for batches.js — batch-name rule (mirrors migration 25's
-// batches_name_rule trigger), Admin -> Batches form validation, and the
+// Unit tests for batches.js — batch-name rule (mirrors migration 30's
+// enforce_batch_name_rule trigger function), Admin -> Batches form validation, and the
 // enrollment fee auto-fill from a batch.
 //
 // Run directly with: node --test src/lib/batches.test.js
@@ -7,6 +7,7 @@ import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import {
   isValidBatchName,
+  BATCH_NAME_MESSAGE,
   normalizeBatchName,
   validateBatchForm,
   unsetBatchFees,
@@ -14,19 +15,26 @@ import {
 } from "./batches.js";
 
 describe("batch name rule", () => {
-  test("accepts capital letters and digits only", () => {
-    for (const n of ["DBHM2026A", "B1", "ODHM", "2026"]) assert.equal(isValidBatchName(n), true, n);
+  test("accepts capital letters, digits, single inner spaces and - / & . ( ) _", () => {
+    for (const n of ["DBHM2026A", "B1", "2026", "BATCH 7", "DBHM-2026/A", "NURSING (EVENING) 1", "A&B_2", "B.SC 1", "X"]) {
+      assert.equal(isValidBatchName(n), true, n);
+    }
   });
 
-  test("rejects lowercase, spaces, hyphens, symbols and blanks", () => {
-    for (const n of ["dbhm2026", "BATCH 1", "DBHM-2026", "DBHM_2026", "B1!", "", " B1", null]) {
-      assert.equal(isValidBatchName(n), false, String(n));
+  test("rejects lowercase, leading/trailing/double spaces, other symbols and blanks", () => {
+    for (const n of [
+      "dbhm2026", "Batch 7", "b1",
+      " B1", "B1 ", "B  1", "  ", "B1\t2", "B1\u00a02",
+      "B1!", "B1,2", "B1'2", 'B1"2', "B1%", "B1*", "B1?", "B1\\2", "B1+2", "B1:2", "B1#", "ÄB1",
+      "", null, undefined,
+    ]) {
+      assert.equal(isValidBatchName(n), false, JSON.stringify(n));
     }
   });
 
   test("normalizeBatchName upper-cases as typed but strips nothing", () => {
     assert.equal(normalizeBatchName("dbhm2026a"), "DBHM2026A");
-    assert.equal(normalizeBatchName("batch 1"), "BATCH 1"); // still invalid, visibly
+    assert.equal(normalizeBatchName("batch  1 "), "BATCH  1 "); // still invalid, visibly
     assert.equal(normalizeBatchName(undefined), "");
   });
 });
@@ -62,9 +70,21 @@ describe("validateBatchForm", () => {
   });
 
   test("new batch: bad name is rejected", () => {
-    const problems = validateBatchForm({ ...good, name: "DBHM 2026" }, { courseNames });
-    assert.equal(problems.length, 1);
-    assert.match(problems[0], /capital letters and digits/);
+    for (const name of ["dbhm 2026", "DBHM  2026", " DBHM", "DBHM ", "DBHM!"]) {
+      const problems = validateBatchForm({ ...good, name }, { courseNames });
+      assert.equal(problems.length, 1, name);
+      assert.equal(problems[0], BATCH_NAME_MESSAGE);
+    }
+  });
+
+  test("new batch: spaces between words and allowed symbols are fine", () => {
+    for (const name of ["DBHM 2026", "DBHM-2026/A", "NURSING (EVENING)"]) {
+      assert.deepEqual(validateBatchForm({ ...good, name }, { courseNames }), [], name);
+    }
+  });
+
+  test("a blank name says it is required", () => {
+    assert.deepEqual(validateBatchForm({ ...good, name: "   " }, { courseNames }), ["Batch name is required."]);
   });
 
   test("new batch: course must come from the courses list", () => {
@@ -80,7 +100,8 @@ describe("validateBatchForm", () => {
 
   test("editing: renaming or changing course applies the rules", () => {
     const original = { name: "BATCH 1", course_name: "Old free-text course" };
-    assert.equal(validateBatchForm({ ...good, name: "BATCH 1X", course_name: original.course_name }, { original, courseNames }).length, 1);
+    assert.equal(validateBatchForm({ ...good, name: "batch 1x", course_name: original.course_name }, { original, courseNames }).length, 1);
+    assert.deepEqual(validateBatchForm({ ...good, name: "BATCH 1X", course_name: original.course_name }, { original, courseNames }), []);
     assert.equal(validateBatchForm({ ...good, name: "BATCH 1", course_name: "Another free text" }, { original, courseNames }).length, 1);
     assert.deepEqual(validateBatchForm({ ...good, name: "BATCH1" }, { original, courseNames }), []);
   });

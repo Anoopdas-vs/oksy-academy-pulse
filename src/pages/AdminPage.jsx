@@ -11,6 +11,7 @@ import {
   resolveRoleAreas,
 } from "../lib/access.js";
 import { friendlyError, normalizeCourseCode } from "../lib/validation.js";
+import { batchDisplayStatus, istToday } from "../lib/batchStatus.js";
 import { normalizeBatchName, validateBatchForm, unsetBatchFees } from "../lib/batches.js";
 
 const emptyBatch = {
@@ -156,6 +157,7 @@ function Batches({ batches, courses = [], busy, actions, canDelete }) {
   const [error, setError] = useState("");
   const set = (patch) => setForm({ ...form, ...patch });
   const courseNames = courses.filter((c) => !c.archived).map((c) => c.name);
+  const today = istToday();
 
   const reset = () => {
     setEditing(null);
@@ -260,10 +262,10 @@ function Batches({ batches, courses = [], busy, actions, canDelete }) {
         <div className="card-heading"><div><h3>Batches</h3><p>Used to pre-fill course &amp; fee at enrolment</p></div></div>
         <table>
           <thead>
-            <tr><th>Name</th><th>Course</th><th>Course Fee</th><th>Registration</th><th>Exam</th><th>Start</th><th>End</th><th>Duration</th><th></th></tr>
+            <tr><th>Name</th><th>Course</th><th>Course Fee</th><th>Registration</th><th>Exam</th><th>Start</th><th>End</th><th>Batch Status</th><th>Duration</th><th></th></tr>
           </thead>
           <tbody>
-            {batches.length === 0 && <tr><td colSpan={9} className="table-empty">No batches yet.</td></tr>}
+            {batches.length === 0 && <tr><td colSpan={10} className="table-empty">No batches yet.</td></tr>}
             {batches.map((b) => {
               const unset = unsetBatchFees(b);
               const fee = (f) =>
@@ -277,6 +279,12 @@ function Batches({ batches, courses = [], busy, actions, canDelete }) {
                 <td>{fee("exam_fee")}</td>
                 <td>{b.start_date || "—"}</td>
                 <td>{b.end_date || "—"}</td>
+                <td>
+                  {(() => {
+                    const st = batchDisplayStatus(b, today);
+                    return st ? <span className={`mini-tag${st === "Running" ? " ok" : st === "Date issue" ? " warn" : ""}`}>{st}</span> : "—";
+                  })()}
+                </td>
                 <td>{b.duration}</td>
                 <td className="row-actions">
                   {canDelete && (
