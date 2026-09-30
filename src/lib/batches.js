@@ -46,6 +46,10 @@ export function validateBatchForm(form, { original = null, courseNames = [] } = 
     problems.push("Choose a course from the list.");
   }
 
+  if (form.start_date && form.end_date && form.end_date < form.start_date) {
+    problems.push("End date can't be before the start date.");
+  }
+
   for (const f of BATCH_FEE_FIELDS) {
     const raw = form[f];
     if (isBlank(raw)) {

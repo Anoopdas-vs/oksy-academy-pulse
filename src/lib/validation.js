@@ -46,6 +46,9 @@ export function friendlyError(err) {
   if (/violates check constraint/i.test(msg) && /guardian_relation/i.test(msg)) {
     return "Guardian relation must be Father, Mother or Other.";
   }
+  if (/violates check constraint/i.test(msg) && /batches_end_after_start/i.test(msg)) {
+    return "End date can't be before the start date.";
+  }
   if (/violates check constraint/i.test(msg) && /status/i.test(msg)) {
     return "Status must be one of: Registered, Active, Completed, Dropped.";
   }

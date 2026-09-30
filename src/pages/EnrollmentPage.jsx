@@ -225,11 +225,14 @@ export default function EnrollmentPage({
             <Input label="Waiver" type="number" min="0" value={form.waiver} onChange={(v) => set({ waiver: v })} />
             <div className="field">
               <label>Status</label>
-              <select value={form.status} onChange={(e) => set({ status: e.target.value })}>
-                <option>Registered</option>
-                <option>Active</option>
-                <option>Completed</option>
-                <option>Dropped</option>
+              {/* Status follows the batch dates (database trigger, migration 28b); the only
+                  status a person can set is Dropped. Any other choice is re-derived on save. */}
+              <select
+                value={form.status === "Dropped" ? "Dropped" : "auto"}
+                onChange={(e) => set({ status: e.target.value === "Dropped" ? "Dropped" : (form.status === "Dropped" ? "Registered" : form.status) })}
+              >
+                <option value="auto">Follow batch dates{form.status !== "Dropped" && form.status ? ` (now ${form.status})` : ""}</option>
+                <option value="Dropped">Dropped</option>
               </select>
             </div>
             <Input label="Enrollment Date" type="date" value={form.enrollment_date} onChange={(v) => set({ enrollment_date: v })} />

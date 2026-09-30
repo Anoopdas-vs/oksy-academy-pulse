@@ -113,6 +113,15 @@ describe("validateMoneyRow — the gate every fee/expense row passes through bef
   });
 });
 
+describe("friendlyError — batch date order (migration 29)", () => {
+  test("maps the batches_end_after_start check violation to a plain message", () => {
+    const msg = friendlyError({
+      message: 'new row for relation "batches" violates check constraint "batches_end_after_start"',
+    });
+    assert.equal(msg, "End date can't be before the start date.");
+  });
+});
+
 describe("friendlyError — translating raw Postgres/RLS errors for non-technical staff", () => {
   test("maps a blocked-by-RLS write to a permission message, not the raw Postgres text", () => {
     const msg = friendlyError({ message: "new row violates row-level security policy for table" });
