@@ -849,13 +849,13 @@ export const REASON_LABEL = {
 export function ledgerByKeyOf({ collections = [], expenses = [], transfers = [] } = {}) {
   const map = new Map();
   collections.forEach((c) =>
-    map.set(`collection:${c.id}`, { kind: "collection", id: c.id, date: c.date, amount: amt(c.amount), label: receiptNo(c.id) })
+    map.set(`collection:${c.id}`, { kind: "collection", id: c.id, date: c.date, amount: amt(c.amount), label: receiptNo(c.id), bankReference: c.bank_reference ?? "" })
   );
   expenses.forEach((e) =>
-    map.set(`expense:${e.id}`, { kind: "expense", id: e.id, date: e.date, amount: amt(e.amount), label: expenseCode(e.id) })
+    map.set(`expense:${e.id}`, { kind: "expense", id: e.id, date: e.date, amount: amt(e.amount), label: expenseCode(e.id), bankReference: e.bank_reference ?? "" })
   );
   transfers.forEach((t) =>
-    map.set(`transfer:${t.id}`, { kind: "transfer", id: t.id, date: t.date, amount: amt(t.amount), label: transferCode(t.id) })
+    map.set(`transfer:${t.id}`, { kind: "transfer", id: t.id, date: t.date, amount: amt(t.amount), label: transferCode(t.id), bankReference: t.bank_reference ?? "" })
   );
   return map;
 }
@@ -1084,3 +1084,158 @@ export const linkedKeys = (allLines) => usedKeysOf(allLines);
 
 // True when an entry already has a recorded bank_reference (never overwrite).
 export const hasBankReference = (entry) => String(entry?.bank_reference ?? "").trim() !== "";
+
+// ---------------------------------------------------------------------------
+// Sync to books (bank reference + date correction). Pure helpers; the writes
+// happen in the sync_bank_entries RPC (migration 35). Single-tenant.
+// ---------------------------------------------------------------------------
+
+// Full bank line text as the Classify flow stamps it onto a record's
+// bank_reference: description plus any separate reference/UTR column, 500 max.
+export const bankReferenceText = (line) =>
+  [line.description, line.reference].filter(Boolean).join(" ").trim().slice(0, 500);
+
+const monthOf = (iso) => String(iso || "").slice(0, 7);
+
+// Why a row cannot be synced (only MATCH / GROUP / DATE_DIFF with a zero
+// amount diff is eligible).
+const SKIP_REASON = {
+  AMOUNT_DIFF: "amount diff",
+  REVIEW: "review",
+  UNMATCHED: "unmatched",
+  IGNORED: "ignored",
+};
+
+// rows = buildReconRows() output; ledger = ledgerByKeyOf(). For every entry
+// linked to an eligible line:
+//   reference: { status: 'fill' | 'conflict' | 'same', current, next }
+//   date: null | { from, to, monthChanges }   (only when the book date differs)
+export function buildSyncPreview(rows, ledger) {
+  const items = [];
+  const skippedByReason = {};
+  let eligible = 0;
+  let skipped = 0;
+
+  rows.forEach((r) => {
+    const ok =
+      r.links.length > 0 &&
+      r.amountDiff === 0 &&
+      (r.result === "MATCH" || r.result === "GROUP" || r.result === "DATE_DIFF");
+    if (!ok) {
+      skipped += 1;
+      const why = SKIP_REASON[r.result] || "not linked";
+      skippedByReason[why] = (skippedByReason[why] || 0) + 1;
+      return;
+    }
+    eligible += 1;
+    const next = bankReferenceText(r.line);
+    r.links.forEach((k) => {
+      const entry = ledger.get(`${k.kind}:${k.bookId}`);
+      if (!entry) return;
+      const current = String(entry.bankReference ?? "");
+      const status = !next ? "same" : current === "" ? "fill" : current === next ? "same" : "conflict";
+      const entryDate = isoDay(entry.date);
+      items.push({
+        key: `${k.kind}:${k.bookId}`,
+        kind: k.kind,
+        bookId: k.bookId,
+        label: k.label,
+        lineId: r.lineId,
+        bankDate: r.bankDate,
+        reference: { status, current, next },
+        date:
+          entryDate !== r.bankDate
+            ? { from: entryDate, to: r.bankDate, monthChanges: monthOf(entryDate) !== monthOf(r.bankDate) }
+            : null,
+      });
+    });
+  });
+
+  const count = (fn) => items.filter(fn).length;
+  return {
+    items,
+    skippedByReason,
+    totals: {
+      eligible,
+      skipped,
+      fills: count((i) => i.reference.status === "fill"),
+      conflicts: count((i) => i.reference.status === "conflict"),
+      dateChanges: count((i) => i.date),
+      monthChanges: count((i) => i.date?.monthChanges),
+    },
+  };
+}
+
+// Default ticks: reference fills on; conflicts, date changes and month
+// changes all off.
+export const defaultSyncSelection = (preview) => ({
+  refKeys: new Set(preview.items.filter((i) => i.reference.status === "fill").map((i) => i.key)),
+  dateKeys: new Set(),
+});
+
+// Master "Book date -> Bank date" checkbox: ticks every date change EXCEPT
+// month changes (those need their own tick); off clears all date ticks.
+export function setMasterDate(preview, selection, on) {
+  const dateKeys = new Set(selection.dateKeys);
+  preview.items.forEach((i) => {
+    if (!i.date) return;
+    if (!on) dateKeys.delete(i.key);
+    else if (!i.date.monthChanges) dateKeys.add(i.key);
+  });
+  return { ...selection, dateKeys };
+}
+
+// Explicit Select all / none buttons (all = every actionable change).
+export function selectAllSync(preview, on) {
+  return on
+    ? {
+        refKeys: new Set(preview.items.filter((i) => i.reference.status !== "same").map((i) => i.key)),
+        dateKeys: new Set(preview.items.filter((i) => i.date).map((i) => i.key)),
+      }
+    : { refKeys: new Set(), dateKeys: new Set() };
+}
+
+// Payload for sync_bank_entries. A conflict is included only when ticked (and
+// then carries overwrite: true); expected_old is the value seen in the preview.
+export function buildSyncPayload(preview, selection) {
+  const payload = [];
+  preview.items.forEach((i) => {
+    const ref = i.reference;
+    if (selection.refKeys.has(i.key) && (ref.status === "fill" || ref.status === "conflict")) {
+      payload.push({
+        book_kind: i.kind,
+        book_id: i.bookId,
+        field: "bank_reference",
+        new_value: ref.next,
+        expected_old: ref.current,
+        overwrite: ref.status === "conflict",
+      });
+    }
+    if (selection.dateKeys.has(i.key) && i.date) {
+      payload.push({
+        book_kind: i.kind,
+        book_id: i.bookId,
+        field: "date",
+        new_value: i.date.to,
+        expected_old: i.date.from,
+        overwrite: false,
+      });
+    }
+  });
+  return payload;
+}
+
+// Recent sync runs, grouped from bank_sync_history rows.
+export function groupSyncRuns(historyRows) {
+  const runs = new Map();
+  historyRows.forEach((h) => {
+    const run = runs.get(h.run_id) || { runId: h.run_id, syncedAt: h.synced_at, syncedBy: h.synced_by, changes: 0, undone: 0 };
+    run.changes += 1;
+    if (h.undone_at) run.undone += 1;
+    if (h.synced_at < run.syncedAt) run.syncedAt = h.synced_at;
+    runs.set(h.run_id, run);
+  });
+  return [...runs.values()]
+    .map((r) => ({ ...r, isUndone: r.undone === r.changes }))
+    .sort((a, b) => (a.syncedAt < b.syncedAt ? 1 : -1));
+}

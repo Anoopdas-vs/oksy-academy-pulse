@@ -1,5 +1,5 @@
 import { supabase } from "./supabaseClient.js";
-import { isLinkConflict, LINK_CONFLICT_MESSAGE } from "./reconcile.js";
+import { groupSyncRuns, isLinkConflict, LINK_CONFLICT_MESSAGE } from "./reconcile.js";
 
 // -------- Students --------
 
@@ -456,6 +456,42 @@ export async function saveMatchLinks(lineId, links, source = "manual", { status 
 export async function removeMatchLinks(lineId, { status = "unmatched" } = {}) {
   const { error } = await supabase.rpc("remove_bank_match_links", { p_line_id: lineId, p_status: status });
   if (error) throw error;
+}
+
+// -------- Bank sync (migration 35) --------
+// Writes bank_reference / date onto book entries inside ONE database
+// transaction. `items` come from buildSyncPayload(); returns rows changed.
+export async function syncBankEntries(runId, items) {
+  const { data, error } = await supabase.rpc("sync_bank_entries", { p_run_id: runId, p_items: items });
+  if (error) throw error;
+  return Number(data) || 0;
+}
+
+// Undo one run. Resolves to { restored, skipped }.
+export async function undoBankSync(runId) {
+  const { data, error } = await supabase.rpc("undo_bank_sync", { p_run_id: runId });
+  if (error) throw error;
+  return { restored: Number(data?.restored) || 0, skipped: Number(data?.skipped) || 0 };
+}
+
+// Recent sync runs, newest first: [{ runId, syncedAt, syncedBy, syncedByName,
+// changes, undone, isUndone }]. Grouped from bank_sync_history.
+export async function fetchSyncRuns(limit = 20) {
+  const { data, error } = await supabase
+    .from("bank_sync_history")
+    .select("run_id, synced_at, synced_by, undone_at")
+    .order("synced_at", { ascending: false })
+    .limit(1000);
+  if (error) throw error;
+  const runs = groupSyncRuns(data || []).slice(0, limit);
+  // Best effort: show who ran it. Names are optional, so a failure is ignored.
+  const ids = [...new Set(runs.map((r) => r.syncedBy).filter(Boolean))];
+  let names = new Map();
+  if (ids.length) {
+    const { data: people } = await supabase.from("profiles").select("id, full_name, email").in("id", ids);
+    names = new Map((people || []).map((p) => [p.id, p.full_name || p.email]));
+  }
+  return runs.map((r) => ({ ...r, syncedByName: names.get(r.syncedBy) || "" }));
 }
 
 export async function deleteBankStatement(id) {

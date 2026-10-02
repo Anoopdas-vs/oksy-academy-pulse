@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { Suspense, lazy, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { ErrorBanner, Input, Modal, MetricCard } from "../components/ui.jsx";
 import { formatMoney } from "../lib/format.js";
@@ -7,6 +7,10 @@ import { SearchBox, Pager } from "../components/SearchPager.jsx";
 import { usePagedList } from "../lib/usePagedList.js";
 import { downloadTemplate } from "../lib/templates.js";
 import LinkEntryModal from "../components/LinkEntryModal.jsx";
+
+// Loaded on first use so they stay out of the page chunk until opened.
+const SyncBankModal = lazy(() => import("../components/SyncBankModal.jsx"));
+const SyncHistoryModal = lazy(() => import("../components/SyncHistoryModal.jsx"));
 import {
   reconciliationSummary,
   matchKindLabel,
@@ -57,6 +61,9 @@ export default function BankingPage({
   onUnmatchLine,
   onApplyRerun,
   onLinkLine,
+  onSyncRun,
+  onUndoSync,
+  onLoadSyncRuns,
   onDeleteStatement,
   loading = false,
 }) {
@@ -120,6 +127,9 @@ export default function BankingPage({
           onUnmatchLine={onUnmatchLine}
           onApplyRerun={onApplyRerun}
           onLinkLine={onLinkLine}
+          onSyncRun={onSyncRun}
+          onUndoSync={onUndoSync}
+          onLoadSyncRuns={onLoadSyncRuns}
           onDeleteStatement={onDeleteStatement}
         />
       )}
@@ -329,12 +339,17 @@ function ReconcileView({
   onUnmatchLine,
   onApplyRerun,
   onLinkLine,
+  onSyncRun,
+  onUndoSync,
+  onLoadSyncRuns,
   onDeleteStatement,
 }) {
   const [account, setAccount] = useState("ICICI");
   const [openId, setOpenId] = useState(null);
   const [classifying, setClassifying] = useState(null); // a line row
   const [linking, setLinking] = useState(null); // { line, account } for the Link entry popup
+  const [syncing, setSyncing] = useState(null); // { statement, lines } for the Sync to books preview
+  const [showSyncHistory, setShowSyncHistory] = useState(false);
   const [rerun, setRerun] = useState(null); // { statementId, changes } dry-run awaiting confirmation
   const [tableView, setTableView] = useState("new"); // "new" review table | "classic" table
 
@@ -447,6 +462,20 @@ function ReconcileView({
                 >
                   Export Excel
                 </button>
+                {isAdmin && (
+                  <>
+                    <button
+                      className="button secondary small"
+                      disabled={busy || lines.length === 0}
+                      onClick={() => setSyncing({ statement: st, lines })}
+                    >
+                      Sync to books
+                    </button>
+                    <button className="button ghost small" onClick={() => setShowSyncHistory(true)}>
+                      Sync history
+                    </button>
+                  </>
+                )}
                 <button className="button secondary small" onClick={() => setOpenId(isOpen ? null : st.id)}>
                   {isOpen ? "Hide lines" : "Show lines"}
                 </button>
@@ -561,6 +590,23 @@ function ReconcileView({
           onConfirm={(entries) => onLinkLine(linking.line, entries)}
         />
       )}
+
+      <Suspense fallback={null}>
+        {syncing && (
+          <SyncBankModal
+            statement={syncing.statement}
+            lines={syncing.lines}
+            allLines={bankLines}
+            data={data}
+            onClose={() => setSyncing(null)}
+            onApply={onSyncRun}
+            onUndo={onUndoSync}
+          />
+        )}
+        {showSyncHistory && (
+          <SyncHistoryModal onClose={() => setShowSyncHistory(false)} onLoadRuns={onLoadSyncRuns} onUndo={onUndoSync} />
+        )}
+      </Suspense>
 
       {classifying && (
         <ClassifyModal

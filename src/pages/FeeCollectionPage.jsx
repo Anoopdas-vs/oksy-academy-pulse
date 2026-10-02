@@ -4,7 +4,7 @@ import { formatMoney, receiptNo } from "../lib/format.js";
 import { SearchBox, Pager } from "../components/SearchPager.jsx";
 import { usePagedList } from "../lib/usePagedList.js";
 import { downloadTemplate } from "../lib/templates.js";
-import { outstanding as outstandingFor, creditBalance as creditFor } from "../lib/fees.js";
+import { outstanding as outstandingFor, creditBalance as creditFor, COLLECTION_SEARCH_FIELDS } from "../lib/fees.js";
 import StudentPicker from "../components/StudentPicker.jsx";
 import { validateBankReference, normalizeBankReference } from "../lib/validation.js";
 
@@ -33,7 +33,7 @@ export default function FeeCollectionPage({
   const [busy, setBusy] = useState(false);
   const showActions = canEdit || canDelete;
   const paged = usePagedList(collections, {
-    searchFields: ["student_id", "student_name", "type", "reference"],
+    searchFields: COLLECTION_SEARCH_FIELDS,
     pageSize: 20,
   });
 

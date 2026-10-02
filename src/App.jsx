@@ -17,7 +17,7 @@ import {
   studentFeeTotals,
 } from "./lib/fees.js";
 import { parseBankStatement } from "./lib/bankStatement.js";
-import { attachLinks, buildManualLinkPayload, hasBankReference, linksToLinePatch, matchStatementLines } from "./lib/reconcile.js";
+import { attachLinks, bankReferenceText, buildManualLinkPayload, hasBankReference, linksToLinePatch, matchStatementLines } from "./lib/reconcile.js";
 import { getAccess } from "./lib/access.js";
 import {
   fetchStudents,
@@ -45,6 +45,9 @@ import {
   fetchStatementLineIds,
   saveMatchLinks,
   removeMatchLinks,
+  syncBankEntries,
+  undoBankSync,
+  fetchSyncRuns,
   createBankStatement,
   updateBankStatementLine,
   updateBankStatementLineIfOpen,
@@ -852,13 +855,6 @@ function AppShell() {
 
   /* ---------------- Bank reconciliation ---------------- */
 
-  // Full bank statement text to copy onto a matched fee collection's
-  // bank_reference field -- description plus any separate reference/UTR
-  // column, so staff can audit the collection against the statement
-  // without reopening the reconciliation screen.
-  const bankReferenceText = (line) =>
-    [line.description, line.reference].filter(Boolean).join(" ").trim().slice(0, 500);
-
   // Stamp the bank line's text onto a linked entry ONLY while the entry's
   // bank_reference is empty -- a value someone already recorded is never
   // overwritten here (replacing references is reserved for the Sync with
@@ -975,6 +971,31 @@ function AppShell() {
       await saveMatchLinks(payload.lineId, payload.links, payload.source, { status: payload.status });
       await Promise.all(payload.links.map((k) => fillBankReference(k.bookKind, k.bookId, line)));
       await Promise.all([loadData(), loadBankData()]);
+    } finally {
+      setBankBusy(false);
+    }
+  };
+
+  // Sync to books: apply the ticked reference / date changes in one atomic
+  // call, then reload books and lines. Errors propagate to the modal.
+  const runBankSync = async (items) => {
+    setBankBusy(true);
+    try {
+      const runId = crypto.randomUUID();
+      const changed = await syncBankEntries(runId, items);
+      await Promise.all([loadData(), loadBankData()]);
+      return { runId, changed };
+    } finally {
+      setBankBusy(false);
+    }
+  };
+
+  const undoSyncRun = async (runId) => {
+    setBankBusy(true);
+    try {
+      const result = await undoBankSync(runId);
+      await Promise.all([loadData(), loadBankData()]);
+      return result;
     } finally {
       setBankBusy(false);
     }
@@ -1659,6 +1680,9 @@ function AppShell() {
             onUnmatchLine={unmatchBankLine}
             onApplyRerun={applyBankRerun}
             onLinkLine={linkBankLine}
+            onSyncRun={runBankSync}
+            onUndoSync={undoSyncRun}
+            onLoadSyncRuns={fetchSyncRuns}
             onDeleteStatement={removeBankStatement}
           />
         )}

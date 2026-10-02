@@ -34,6 +34,13 @@ import {
   bookOnlyEntries,
   linkedKeys,
   hasBankReference,
+  bankReferenceText,
+  buildSyncPreview,
+  buildSyncPayload,
+  defaultSyncSelection,
+  setMasterDate,
+  selectAllSync,
+  groupSyncRuns,
   LINK_CONFLICT_MESSAGE,
 } from "./reconcile.js";
 
@@ -1030,5 +1037,130 @@ describe("phase 4 fixes", () => {
     assert.deepEqual(out, ["collection:2"]);
     // the link popup excludes the same entries
     assert.deepEqual(linkedKeys([otherStatementLine, otherAccountLine]).sort(), ["collection:1", "transfer:7"]);
+  });
+});
+
+describe("Sync to books — preview and payload", () => {
+  const data = {
+    collections: [
+      { id: 1, account: "HDFC", date: "2026-03-05", amount: 1800, student_name: "A" }, // empty reference, same date
+      { id: 2, account: "HDFC", date: "2026-03-04", amount: 1500, student_name: "B", bank_reference: "OLD NOTE" }, // conflict + date diff
+      { id: 3, account: "HDFC", date: "2026-02-28", amount: 900, student_name: "C" }, // month change
+      { id: 4, account: "HDFC", date: "2025-12-31", amount: 700, student_name: "D" }, // year change
+      { id: 5, account: "HDFC", date: "2026-03-06", amount: 2000, student_name: "E" }, // group member
+      { id: 6, account: "HDFC", date: "2026-03-06", amount: 800, student_name: "F", bank_reference: "NEFT group" }, // group member, same text
+      { id: 7, account: "HDFC", date: "2026-03-06", amount: 1000, student_name: "G" }, // amount diff line
+    ],
+    expenses: [],
+    transfers: [],
+  };
+  const ledger = ledgerByKeyOf(data);
+  const L = (id, date, description, deposit, status, links, extra = {}) => ({
+    id, seq: id, account: "HDFC", txn_date: date, description, reference: "", deposit, withdrawal: 0, status, links, ...extra,
+  });
+  const lk = (bookId) => ({ bookKind: "collection", bookId, source: "manual" });
+  const lines = [
+    L(1, "2026-03-05", "UPI/111/aaa", 1800, "matched", [lk(1)]),
+    L(2, "2026-03-05", "UPI/222/bbb", 1500, "matched", [lk(2)]),
+    L(3, "2026-03-02", "UPI/333/ccc", 900, "matched", [lk(3)]),
+    L(4, "2026-01-02", "UPI/444/ddd", 700, "matched", [lk(4)]),
+    L(5, "2026-03-06", "NEFT group", 2800, "matched", [lk(5), lk(6)]),
+    L(6, "2026-03-06", "UPI/777/ggg", 1200, "matched", [lk(7)]), // 1,200 vs 1,000 -> AMOUNT_DIFF
+    L(7, "2026-03-06", "UPI/888/hhh", 50, "review", []),
+    L(8, "2026-03-06", "UPI/999/iii", 60, "unmatched", []),
+    L(9, "2026-03-06", "UPI/000/jjj", 70, "ignored", []),
+  ];
+  const rows = buildReconRows(lines, ledger);
+  const preview = buildSyncPreview(rows, ledger);
+  const item = (key) => preview.items.find((i) => i.key === key);
+
+  test("reference: fill when empty, conflict when different, same when identical", () => {
+    assert.equal(item("collection:1").reference.status, "fill");
+    assert.equal(item("collection:1").reference.next, bankReferenceText(lines[0]));
+    assert.equal(item("collection:2").reference.status, "conflict");
+    assert.equal(item("collection:2").reference.current, "OLD NOTE");
+    assert.equal(item("collection:6").reference.status, "same");
+  });
+
+  test("the new text is exactly what the Classify flow writes (description + reference, max 500)", () => {
+    assert.equal(bankReferenceText({ description: "UPI/1", reference: "R9" }), "UPI/1 R9");
+    assert.equal(bankReferenceText({ description: "x".repeat(600), reference: "" }).length, 500);
+  });
+
+  test("date: only when the book date differs; month and year changes are flagged", () => {
+    assert.equal(item("collection:1").date, null);
+    assert.deepEqual(item("collection:2").date, { from: "2026-03-04", to: "2026-03-05", monthChanges: false });
+    assert.equal(item("collection:3").date.monthChanges, true); // 28 Feb -> 2 Mar
+    assert.equal(item("collection:4").date.monthChanges, true); // 31 Dec 2025 -> 2 Jan 2026
+  });
+
+  test("a group produces one item per linked entry, both getting the full line text", () => {
+    assert.equal(item("collection:5").reference.next, "NEFT group");
+    assert.equal(item("collection:6").reference.next, "NEFT group");
+  });
+
+  test("AMOUNT_DIFF, REVIEW, UNMATCHED and IGNORED lines are excluded and counted by reason", () => {
+    assert.equal(item("collection:7"), undefined);
+    assert.deepEqual(preview.skippedByReason, { "amount diff": 1, review: 1, unmatched: 1, ignored: 1 });
+    assert.equal(preview.totals.eligible, 5);
+    assert.equal(preview.totals.skipped, 4);
+  });
+
+  test("totals: fills, conflicts, date changes and month changes", () => {
+    assert.deepEqual(
+      [preview.totals.fills, preview.totals.conflicts, preview.totals.dateChanges, preview.totals.monthChanges],
+      [4, 1, 3, 2]
+    );
+  });
+
+  test("defaults: fills ticked, conflicts and dates unticked; payload carries expected_old and no overwrite for fills", () => {
+    const sel = defaultSyncSelection(preview);
+    assert.equal(sel.refKeys.has("collection:2"), false);
+    const payload = buildSyncPayload(preview, sel);
+    assert.ok(payload.every((p) => p.field === "bank_reference" && p.overwrite === false));
+    const fill = payload.find((p) => p.book_id === 1);
+    assert.deepEqual(fill, {
+      book_kind: "collection", book_id: 1, field: "bank_reference", new_value: "UPI/111/aaa", expected_old: "", overwrite: false,
+    });
+    assert.ok(!payload.some((p) => p.book_id === 2)); // conflict not ticked -> not included
+  });
+
+  test("a ticked conflict is included with overwrite true and the old value as expected_old", () => {
+    const sel = defaultSyncSelection(preview);
+    sel.refKeys.add("collection:2");
+    const p = buildSyncPayload(preview, sel).find((x) => x.book_id === 2);
+    assert.deepEqual(p, {
+      book_kind: "collection", book_id: 2, field: "bank_reference", new_value: "UPI/222/bbb", expected_old: "OLD NOTE", overwrite: true,
+    });
+  });
+
+  test("master date checkbox ticks date changes but never month changes; month rows need their own tick", () => {
+    const sel = setMasterDate(preview, defaultSyncSelection(preview), true);
+    assert.equal(sel.dateKeys.has("collection:2"), true);
+    assert.equal(sel.dateKeys.has("collection:3"), false);
+    assert.equal(sel.dateKeys.has("collection:4"), false);
+    const datePayload = buildSyncPayload(preview, sel).filter((p) => p.field === "date");
+    assert.deepEqual(datePayload.map((p) => p.book_id), [2]);
+    assert.deepEqual(datePayload[0], {
+      book_kind: "collection", book_id: 2, field: "date", new_value: "2026-03-05", expected_old: "2026-03-04", overwrite: false,
+    });
+    sel.dateKeys.add("collection:3");
+    assert.ok(buildSyncPayload(preview, sel).some((p) => p.field === "date" && p.book_id === 3));
+    assert.equal(setMasterDate(preview, sel, false).dateKeys.size, 0);
+  });
+
+  test("select all ticks every actionable change; select none clears", () => {
+    const all = selectAllSync(preview, true);
+    assert.equal(buildSyncPayload(preview, all).length, 4 + 1 + 3); // fills + conflict + dates
+    assert.equal(buildSyncPayload(preview, selectAllSync(preview, false)).length, 0);
+  });
+
+  test("sync runs are grouped by run id with change counts and undone state", () => {
+    const runs = groupSyncRuns([
+      { run_id: "a", synced_at: "2026-03-01T10:00:00Z", synced_by: "u1", undone_at: null },
+      { run_id: "a", synced_at: "2026-03-01T10:00:00Z", synced_by: "u1", undone_at: null },
+      { run_id: "b", synced_at: "2026-03-02T10:00:00Z", synced_by: "u1", undone_at: "2026-03-02T11:00:00Z" },
+    ]);
+    assert.deepEqual(runs.map((r) => [r.runId, r.changes, r.isUndone]), [["b", 1, true], ["a", 2, false]]);
   });
 });

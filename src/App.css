@@ -3128,3 +3128,31 @@ tfoot td {
   font-size: 10px;
   color: var(--muted);
 }
+
+/* Sync to books */
+.sync-note {
+  margin: 0 0 8px;
+}
+
+.sync-done {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.sync-cell {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.sync-conflict td {
+  background: #fef9c3;
+}
+
+.sync-month {
+  margin-left: 6px;
+}

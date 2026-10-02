@@ -126,3 +126,13 @@ describe("recon Excel workbook: text is never a formula", () => {
     assert.equal(ws.B2.v, 46086 + 1); // bank line 1 is 2026-03-06
   });
 });
+
+describe("export covers every line regardless of any on-screen filter", () => {
+  test("ignored, review and unmatched lines are all exported (one row per stored line)", () => {
+    const withIgnored = [...lines, attachLinks([L(5, 5, "2026-03-11", "IGNORED LINE", 10, 0, "ignored")], [])[0]];
+    const m = buildReconExportModel({ statement, lines: withIgnored, allLines: withIgnored, data, summary: reconciliationSummary(statement, withIgnored, data) });
+    const rows = m.sheets.find((s) => s.name === "Reconciliation").rows;
+    assert.equal(rows.length, withIgnored.length);
+    assert.ok(rows.some((r) => r[12].v === "Ignored"));
+  });
+});
