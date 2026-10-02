@@ -393,6 +393,21 @@ export async function updateBankStatementLine(id, patch) {
   if (error) throw error;
 }
 
+// Same as updateBankStatementLine, but the row is only updated while it is
+// still 'review' or 'unmatched' -- the database-side guard behind "Re-run
+// auto-match", so a line someone matched in the meantime is never overridden.
+// Resolves to true if the row was updated, false if it was skipped.
+export async function updateBankStatementLineIfOpen(id, patch) {
+  const { data, error } = await supabase
+    .from("bank_statement_lines")
+    .update(patch)
+    .eq("id", id)
+    .in("status", ["review", "unmatched"])
+    .select("id");
+  if (error) throw error;
+  return (data || []).length > 0;
+}
+
 export async function deleteBankStatement(id) {
   const { error } = await supabase.from("bank_statements").delete().eq("id", id);
   if (error) throw error;

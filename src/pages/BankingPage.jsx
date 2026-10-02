@@ -6,7 +6,16 @@ import StudentPicker from "../components/StudentPicker.jsx";
 import { SearchBox, Pager } from "../components/SearchPager.jsx";
 import { usePagedList } from "../lib/usePagedList.js";
 import { downloadTemplate } from "../lib/templates.js";
-import { reconciliationSummary, matchKindLabel, matchedRecordDetail, reviewCandidatesDetail, bankReferenceMismatches } from "../lib/reconcile.js";
+import {
+  reconciliationSummary,
+  matchKindLabel,
+  matchedRecordDetail,
+  reviewCandidatesDetail,
+  bankReferenceMismatches,
+  isOrderAssumed,
+  planRerun,
+  suggestSplitGroups,
+} from "../lib/reconcile.js";
 import { outstanding } from "../lib/fees.js";
 
 const ACCOUNTS = ["HDFC", "ICICI", "Cash", "Healthcare"];
@@ -34,6 +43,7 @@ export default function BankingPage({
   onClassifyLine,
   onIgnoreLine,
   onUnmatchLine,
+  onApplyRerun,
   onDeleteStatement,
   loading = false,
 }) {
@@ -95,6 +105,7 @@ export default function BankingPage({
           onClassifyLine={onClassifyLine}
           onIgnoreLine={onIgnoreLine}
           onUnmatchLine={onUnmatchLine}
+          onApplyRerun={onApplyRerun}
           onDeleteStatement={onDeleteStatement}
         />
       )}
@@ -302,11 +313,13 @@ function ReconcileView({
   onClassifyLine,
   onIgnoreLine,
   onUnmatchLine,
+  onApplyRerun,
   onDeleteStatement,
 }) {
   const [account, setAccount] = useState("ICICI");
   const [openId, setOpenId] = useState(null);
   const [classifying, setClassifying] = useState(null); // a line row
+  const [rerun, setRerun] = useState(null); // { statementId, changes } dry-run awaiting confirmation
 
   const linesByStatement = useMemo(() => {
     const map = new Map();
@@ -396,6 +409,20 @@ function ReconcileView({
                 <button className="button secondary small" onClick={() => setOpenId(isOpen ? null : st.id)}>
                   {isOpen ? "Hide lines" : "Show lines"}
                 </button>
+                {isAdmin && (summary.openCount > 0 || summary.reviewCount > 0) && (
+                  <button
+                    className="button secondary small"
+                    disabled={busy}
+                    onClick={() =>
+                      setRerun({
+                        statementId: st.id,
+                        changes: planRerun(lines, bankLines, st.account, data),
+                      })
+                    }
+                  >
+                    Re-run auto-match
+                  </button>
+                )}
                 {isAdmin && (
                   <button
                     className="button secondary small danger"
@@ -410,6 +437,19 @@ function ReconcileView({
                 )}
               </div>
             </div>
+
+            {rerun && rerun.statementId === st.id && (
+              <RerunPreview
+                changes={rerun.changes}
+                busy={busy}
+                onCancel={() => setRerun(null)}
+                onApply={async () => {
+                  await onApplyRerun(rerun.changes);
+                  setRerun(null);
+                }}
+              />
+            )}
+            {isOpen && <SplitSuggestions lines={lines} allLines={bankLines} account={st.account} data={data} />}
 
             <div className="summary-grid three recon-summary">
               <MetricCard label="Statement closing" value={formatMoney(summary.statementClosing)} tone="auto" amount={summary.statementClosing} />
@@ -499,6 +539,84 @@ function ReconcileView({
   );
 }
 
+const rerunLabel = (c) =>
+  c.new_status === "matched"
+    ? `${matchKindLabel(c.match_kind)} #${c.match_id}${c.assumed_by_order ? " (assumed by order)" : ""}`
+    : "—";
+
+// Dry-run of "Re-run auto-match": exactly which review/unmatched lines would
+// change. Nothing is written until the admin confirms; matched, classified
+// and ignored lines are never part of the plan.
+function RerunPreview({ changes, busy, onCancel, onApply }) {
+  return (
+    <div className="info-box recon-rerun">
+      <p>
+        <strong>Re-run auto-match</strong> — only lines that are currently Needs review or Unmatched are
+        considered. Already matched, classified or ignored lines are never changed.
+      </p>
+      {changes.length === 0 ? (
+        <p>No line would change.</p>
+      ) : (
+        <table>
+          <thead>
+            <tr><th>Line #</th><th>Date</th><th>Amount</th><th>Was</th><th>Becomes</th><th>Record</th></tr>
+          </thead>
+          <tbody>
+            {changes.map((c) => (
+              <tr key={c.line.id}>
+                <td>{c.line.seq}</td>
+                <td>{c.line.txn_date}</td>
+                <td>{formatMoney(Number(c.line.deposit) > 0 ? c.line.deposit : c.line.withdrawal)}</td>
+                <td>{c.old_status}</td>
+                <td>{c.new_status}</td>
+                <td>{rerunLabel(c)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      <div className="header-actions">
+        {changes.length > 0 && (
+          <button className="button primary small" disabled={busy} onClick={onApply}>
+            Apply {changes.length} change{changes.length === 1 ? "" : "s"}
+          </button>
+        )}
+        <button className="button ghost small" onClick={onCancel}>
+          {changes.length > 0 ? "Cancel" : "Close"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// Lines no single record explains, where a sum of records does (e.g. one
+// 3,600 deposit = two 1,800 fees). Suggestions only: nothing is matched
+// automatically -- confirm and settle each line by hand with Resolve/Classify.
+function SplitSuggestions({ lines, allLines, account, data }) {
+  const groups = useMemo(
+    () => suggestSplitGroups(lines, allLines, account, data),
+    [lines, allLines, account, data]
+  );
+  if (!groups.length) return null;
+  const describeEntry = (e) => `${matchKindLabel(e.kind)} #${e.id} ${e.label || ""} ${formatMoney(Math.abs(e.delta))}`.replace(/\s+/g, " ");
+  return (
+    <div className="info-box recon-splits">
+      <p>
+        <strong>Suggested split groups — need your confirmation.</strong> Nothing here is matched
+        automatically; use Resolve / Classify on each line to settle it.
+      </p>
+      <ul>
+        {groups.map((g) => (
+          <li key={g.lines.map((l) => l.id).join("-")}>
+            Line{g.lines.length > 1 ? "s" : ""} {g.lines.map((l) => `#${l.seq}`).join(", ")} ({formatMoney(g.total)}
+            ) could be {g.options.map((o) => o.map(describeEntry).join(" + ")).join("  or  ")}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 function StatusTag({ line, data, students }) {
   const { status } = line;
   const [tip, setTip] = useState(null); // { x, y, flip } | null
@@ -512,6 +630,7 @@ function StatusTag({ line, data, students }) {
   const verb = status === "matched" ? "Matched" : "Added";
   const kindLabel = matchKindLabel(line.match_kind);
   const detail = matchedRecordDetail(line, data, students);
+  const assumed = isOrderAssumed(line);
 
   const show = (e) => {
     if (!detail) return;
@@ -525,14 +644,14 @@ function StatusTag({ line, data, students }) {
 
   return (
     <span
-      className={`mini-tag ok${detail ? " match-tag" : ""}`}
+      className={`mini-tag ${assumed ? "warn" : "ok"}${detail ? " match-tag" : ""}`}
       onMouseEnter={show}
       onMouseLeave={hide}
       onFocus={show}
       onBlur={hide}
       tabIndex={detail ? 0 : undefined}
     >
-      {verb} - {kindLabel}
+      {verb} - {kindLabel}{assumed ? " (assumed by order)" : ""}
       {detail && tip &&
         createPortal(
           <span

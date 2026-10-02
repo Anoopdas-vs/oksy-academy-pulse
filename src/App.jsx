@@ -43,6 +43,7 @@ import {
   fetchBankStatementLines,
   createBankStatement,
   updateBankStatementLine,
+  updateBankStatementLineIfOpen,
   deleteBankStatement,
   fetchBatches,
   insertBatch,
@@ -77,11 +78,11 @@ import Dashboard from "./pages/Dashboard.jsx";
 import EnrollmentPage from "./pages/EnrollmentPage.jsx";
 import FeeCollectionPage from "./pages/FeeCollectionPage.jsx";
 import ExpensesPage from "./pages/ExpensesPage.jsx";
-import BankingPage from "./pages/BankingPage.jsx";
 import ReportsPage from "./pages/ReportsPage.jsx";
 import AdminPage from "./pages/AdminPage.jsx";
 // Academy Suite pages are code-split — they're never the landing tab and
 // pull their own data layer.
+const BankingPage = React.lazy(() => import("./pages/BankingPage.jsx"));
 const TimetablePage = React.lazy(() => import("./pages/TimetablePage.jsx"));
 const LiveClassPage = React.lazy(() => import("./pages/LiveClassPage.jsx"));
 const AssignmentsPage = React.lazy(() => import("./pages/AssignmentsPage.jsx"));
@@ -895,7 +896,11 @@ function AppShell() {
         expense: (id, patch) => updateExpense(id, patch, profile.id),
         transfer: (id, patch) => updateTransfer(id, patch),
       };
-      const bankRefWrites = matchedLines.filter(({ m }) => bankRefUpdaters[m.match_kind]);
+      // Order-assumed pairings are a guess, not evidence: never stamp them
+      // onto the record's audit trail.
+      const bankRefWrites = matchedLines.filter(
+        ({ m }) => bankRefUpdaters[m.match_kind] && !m.assumed_by_order
+      );
       if (bankRefWrites.length) {
         await Promise.all(
           bankRefWrites.map(({ ln, m }) =>
@@ -906,6 +911,44 @@ function AppShell() {
         );
       }
 
+      await Promise.all([loadData(), loadBankData()]);
+    } catch (err) {
+      setDataError(friendlyError(err));
+    } finally {
+      setBankBusy(false);
+    }
+  };
+
+  // Apply a confirmed "Re-run auto-match" plan (see planRerun). Each line is
+  // updated only while it is still review/unmatched, so nothing already
+  // matched, classified or ignored can be overridden. Order-assumed matches
+  // get no bank_reference, same as at upload.
+  const applyBankRerun = async (changes) => {
+    setBankBusy(true);
+    setDataError("");
+    try {
+      const bankRefUpdaters = {
+        collection: (id, patch) => updateCollection(id, patch),
+        expense: (id, patch) => updateExpense(id, patch, profile.id),
+        transfer: (id, patch) => updateTransfer(id, patch),
+      };
+      for (const c of changes) {
+        const matched = c.new_status === "matched";
+        const patch = matched
+          ? {
+              status: "matched",
+              match_kind: c.match_kind,
+              match_id: c.match_id,
+              match_score: c.match_score,
+              matched_at: new Date().toISOString(),
+              matched_by: profile.id,
+            }
+          : { status: c.new_status, match_kind: null, match_id: null, match_score: null };
+        const applied = await updateBankStatementLineIfOpen(c.line.id, patch);
+        if (applied && matched && !c.assumed_by_order && bankRefUpdaters[c.match_kind]) {
+          await bankRefUpdaters[c.match_kind](c.match_id, { bank_reference: bankReferenceText(c.line) });
+        }
+      }
       await Promise.all([loadData(), loadBankData()]);
     } catch (err) {
       setDataError(friendlyError(err));
@@ -1604,6 +1647,7 @@ function AppShell() {
             onClassifyLine={classifyBankLine}
             onIgnoreLine={setBankLineIgnored}
             onUnmatchLine={unmatchBankLine}
+            onApplyRerun={applyBankRerun}
             onDeleteStatement={removeBankStatement}
           />
         )}

@@ -576,6 +576,7 @@ export function matchedRecordDetail(line, data = {}, students = []) {
         { k: "Type", v: c.type || "—" },
         { k: "Amount", v: formatMoney(c.amount) },
         ...(c.bank_reference ? [{ k: "Bank reference", v: c.bank_reference }] : []),
+        ...(isOrderAssumed(line) ? [{ k: "Match basis", v: "assumed by order — please verify" }] : []),
       ],
     };
   }
