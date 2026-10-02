@@ -12,6 +12,12 @@ import {
   identityMatchScore,
   bankReferenceMismatches,
   matchedRecordDetail,
+  ORDER_ASSUMED_SCORE,
+  isOrderAssumed,
+  extractUtrs,
+  planRerun,
+  suggestSplitGroups,
+  reviewCandidatesDetail,
 } from "./reconcile.js";
 
 describe("accountLedger", () => {
@@ -299,5 +305,234 @@ describe("matchedRecordDetail — bank reference row", () => {
     };
     const detail = matchedRecordDetail(line, data);
     assert.ok(!detail.rows.some((r) => r.k === "Bank reference"));
+  });
+});
+
+/* ---- exact-date / UTR / group / re-run passes (production statement #8 shapes) ---- */
+
+const col = (id, date, amount, student_name, extra = {}) => ({ id, account: "ICICI", date, amount, student_name, ...extra });
+const dep = (date, amount, description = "UPI/1/UPI/zzz0000@ok/BANK/X", extra = {}) => ({
+  date,
+  deposit: amount,
+  withdrawal: 0,
+  description,
+  reference: "-",
+  ...extra,
+});
+const ids = (results) => results.map((r) => r.match_id ?? null);
+
+describe("autoMatch — unique exact date + amount (lines #13/#14 shape)", () => {
+  const data = {
+    collections: [
+      col(93, "2025-08-21", 1500, "NAJLA NASRIN"),
+      col(91, "2025-08-22", 1500, "HISANA SHERIN"),
+      col(96, "2025-08-24", 1500, "RAFEEDHA"),
+    ],
+  };
+  test("each line takes its own exact-date record even with no name evidence and same-amount neighbours in the window", () => {
+    const res = autoMatch([dep("2025-08-21", 1500), dep("2025-08-22", 1500)], "ICICI", data);
+    assert.deepEqual(res.map((r) => r.status), ["matched", "matched"]);
+    assert.deepEqual(ids(res), [93, 91]);
+    assert.ok(res.every((r) => !r.assumed_by_order));
+  });
+
+  test("lines #25/#28 shape: each has one exact record and neither steals the other's", () => {
+    const d = { collections: [col(117, "2025-09-11", 1500, "HIBA SHERIN"), col(544, "2025-09-15", 1500, "FARSEENA OP")] };
+    const res = autoMatch([dep("2025-09-11", 1500), dep("2025-09-15", 1500)], "ICICI", d);
+    assert.deepEqual(ids(res), [117, 544]);
+  });
+
+  test("a record claimed as exact-date by two lines is not handed to either by the exact pass", () => {
+    const d = { collections: [col(1, "2026-01-05", 700, "A B")] };
+    const res = autoMatch([dep("2026-01-05", 700), dep("2026-01-05", 700)], "ICICI", d);
+    assert.equal(res.filter((r) => r.status === "matched").length, 1); // consumed at most once
+    assert.ok(res.every((r) => !r.assumed_by_order));
+  });
+
+  test("an exact-date record is not trusted when a neighbour is a clearly better payer-identity fit", () => {
+    const d = {
+      collections: [col(101, "2026-08-03", 500, "Fahmida"), col(102, "2026-08-04", 500, "Fasila PM")],
+    };
+    // Bank line is on Fasila's day but the VPA says Fahmida.
+    const [r] = autoMatch([dep("2026-08-04", 500, "UPI/9/UPI/fahmidat0181@ok/BANK/Z")], "ICICI", d);
+    assert.notEqual(r.match_id, 102);
+  });
+});
+
+describe("autoMatch — UTR pass", () => {
+  test("a record carrying the line's 12-digit UTR wins over an exact-date record", () => {
+    const d = {
+      collections: [
+        col(1, "2025-09-15", 2000, "EXACT DATE"),
+        col(2, "2025-09-13", 2000, "HAS UTR", { reference: "Bank: UPI/562413109000/UPI/x/ICI" }),
+      ],
+    };
+    const [r] = autoMatch([dep("2025-09-15", 2000, "UPI/562413109000/UPI/shakirparasseri/South IndianBa/ICI0")], "ICICI", d);
+    assert.equal(r.match_id, 2);
+    assert.equal(r.match_method, "utr");
+    assert.equal(r.match_score, 1);
+  });
+
+  test("extractUtrs only takes standalone 12-digit runs", () => {
+    assert.deepEqual(extractUtrs("UPI/562413109000/UPI/a9876543210123456@ok"), ["562413109000"]);
+    assert.deepEqual(extractUtrs("8113973475@axl"), []);
+  });
+
+  test("a UTR hit outside amount/date window is ignored", () => {
+    const d = { collections: [col(2, "2025-01-01", 2000, "FAR", { bank_reference: "UPI/562413109000/x" })] };
+    const [r] = autoMatch([dep("2025-09-15", 2000, "UPI/562413109000/UPI/q")], "ICICI", d);
+    assert.equal(r.status, "unmatched");
+  });
+});
+
+describe("autoMatch — equal-sized same date+amount groups", () => {
+  const four = {
+    collections: [
+      col(546, "2025-09-15", 2000, "ABINSHA"),
+      col(542, "2025-09-15", 2000, "FARSEENA OP"),
+      col(545, "2025-09-15", 2000, "HASNA SHIRIN"),
+      col(505, "2025-09-15", 2000, "FATHIMA NASRI"),
+    ],
+  };
+  const lines4 = [
+    dep("2025-09-15", 2000, "UPI/1/UPI/shakirparasseri/SI/A"),
+    dep("2025-09-15", 2000, "UPI/2/UPI/sinusajjad69@ok/C/B"),
+    dep("2025-09-15", 2000, "UPI/3/UPI/naniwdr@okaxis/F/C"),
+    dep("2025-09-15", 2000, "UPI/4/UPI/hisanayasim@okh/K/D"),
+  ];
+
+  test("with no name evidence they pair in order (record id ascending), flagged assumed-by-order with the sentinel score", () => {
+    const res = autoMatch(lines4, "ICICI", four);
+    assert.deepEqual(ids(res), [505, 542, 545, 546]);
+    assert.ok(res.every((r) => r.assumed_by_order && r.match_score === ORDER_ASSUMED_SCORE));
+  });
+
+  test("name evidence is used first: the decisive line gets its record; the rest fall back to order", () => {
+    const lines = [
+      dep("2025-09-15", 2000, "UPI/1/UPI/q1/SI/A"),
+      dep("2025-09-15", 2000, "UPI/2/UPI/abinsha1234@ok/C/B"),
+    ];
+    const d = { collections: [col(10, "2025-09-15", 2000, "SOMEONE ELSE"), col(11, "2025-09-15", 2000, "ABINSHA")] };
+    const res = autoMatch(lines, "ICICI", d);
+    assert.equal(res[1].match_id, 11);
+    assert.equal(res[1].assumed_by_order, undefined);
+    assert.equal(res[0].match_id, 10);
+    assert.equal(res[0].assumed_by_order, true);
+  });
+
+  test("unequal counts (3 lines vs 2 records) are never paired by order", () => {
+    const d = { collections: [col(1, "2026-02-02", 900, "P Q"), col(2, "2026-02-02", 900, "R S")] };
+    const res = autoMatch([dep("2026-02-02", 900), dep("2026-02-02", 900), dep("2026-02-02", 900)], "ICICI", d);
+    assert.ok(res.every((r) => !r.assumed_by_order));
+    assert.ok(res.some((r) => r.status === "review"));
+  });
+
+  test("a UTR hit inside a group is matched for certain and the remaining pair falls to order", () => {
+    const d = {
+      collections: [
+        col(1, "2026-03-01", 2000, "A A"),
+        col(2, "2026-03-01", 2000, "B B", { bank_reference: "UPI/111111111111/x" }),
+        col(3, "2026-03-01", 2000, "C C"),
+      ],
+    };
+    const lines = [dep("2026-03-01", 2000, "UPI/222222222222/UPI/p/Q"), dep("2026-03-01", 2000, "UPI/111111111111/UPI/r/Q"), dep("2026-03-01", 2000, "UPI/333333333333/UPI/s/Q")];
+    const res = autoMatch(lines, "ICICI", d);
+    assert.equal(res[1].match_id, 2);
+    assert.equal(res[1].match_method, "utr");
+    assert.deepEqual([res[0].match_id, res[2].match_id], [1, 3]);
+  });
+});
+
+describe("autoMatch — consumed records", () => {
+  test("usedKeys seeds records that must not be matched again", () => {
+    const d = { collections: [col(1, "2026-01-05", 1000, "X Y")] };
+    const [r] = autoMatch([dep("2026-01-05", 1000)], "ICICI", d, 4, { usedKeys: ["collection:1"] });
+    assert.equal(r.status, "unmatched");
+  });
+});
+
+describe("planRerun — only touches open lines", () => {
+  const data = {
+    collections: [col(1, "2026-04-01", 1500, "A B"), col(2, "2026-04-02", 1500, "C D"), col(3, "2026-04-03", 800, "E F")],
+  };
+  const row = (id, seq, txn_date, deposit, status, extra = {}) => ({
+    id, seq, account: "ICICI", txn_date, deposit, withdrawal: 0, description: "UPI/x", reference: "-", status, ...extra,
+  });
+  const lines = [
+    row(10, 1, "2026-04-01", 1500, "review"),
+    row(11, 2, "2026-04-02", 1500, "matched", { match_kind: "collection", match_id: 2 }),
+    row(12, 3, "2026-04-03", 800, "ignored"),
+    row(13, 4, "2026-04-09", 5000, "unmatched"),
+  ];
+
+  test("matched/ignored lines never appear in the plan; the held record is not reused", () => {
+    const plan = planRerun(lines, lines, "ICICI", data);
+    assert.deepEqual(plan.map((c) => c.line.id), [10]);
+    assert.equal(plan[0].old_status, "review");
+    assert.equal(plan[0].new_status, "matched");
+    assert.equal(plan[0].match_id, 1);
+  });
+
+  test("lines whose outcome is unchanged are omitted", () => {
+    const plan = planRerun(lines, lines, "ICICI", data);
+    assert.ok(!plan.some((c) => c.line.id === 13));
+  });
+
+  test("a record held by a matched line of another statement is excluded", () => {
+    const all = [...lines, row(99, 1, "2026-04-01", 1500, "matched", { match_kind: "collection", match_id: 1 })];
+    const plan = planRerun(lines, all, "ICICI", data);
+    assert.equal(plan.length, 1);
+    assert.equal(plan[0].new_status, "unmatched"); // record 1 is taken, so nothing to match
+    assert.equal(plan[0].match_id, null);
+  });
+});
+
+describe("suggestSplitGroups — suggestion only", () => {
+  const row = (id, seq, txn_date, deposit) => ({
+    id, seq, account: "ICICI", txn_date, deposit, withdrawal: 0, description: "UPI/x", reference: "-", status: "unmatched",
+  });
+
+  test("one 3600 line is suggested as the 1800 + 1800 pair on the same day (OKSY/000224 + 000225)", () => {
+    const d = { collections: [col(224, "2025-12-08", 1800, "SHIBILA KH"), col(225, "2025-12-08", 1800, "FAISHA")] };
+    const lines = [row(1, 104, "2025-12-08", 3600)];
+    const [s] = suggestSplitGroups(lines, lines, "ICICI", d);
+    assert.equal(s.total, 3600);
+    assert.deepEqual(s.options[0].map((e) => e.id).sort(), [224, 225]);
+  });
+
+  test("lines 2000 + 800 + 2000 are suggested as 3000 + 1800 (many lines to fewer records)", () => {
+    const d = {
+      collections: [col(243, "2025-12-15", 3000, "NASIYA"), col(245, "2025-12-15", 1800, "HIBA SHERIN")],
+    };
+    const lines = [row(1, 122, "2025-12-15", 2000), row(2, 123, "2025-12-15", 800), row(3, 124, "2025-12-15", 2000)];
+    const out = suggestSplitGroups(lines, lines, "ICICI", d);
+    const group = out.find((s) => s.lines.length === 3);
+    assert.equal(group.total, 4800);
+    assert.deepEqual(group.options[0].map((e) => e.id).sort(), [243, 245]);
+  });
+
+  test("suggestions never alter statuses and ignore records already held", () => {
+    const d = { collections: [col(224, "2025-12-08", 1800, "A"), col(225, "2025-12-08", 1800, "B")] };
+    const lines = [row(1, 104, "2025-12-08", 3600)];
+    const held = [{ ...row(9, 1, "2025-12-08", 1800), status: "matched", match_kind: "collection", match_id: 224 }];
+    assert.deepEqual(suggestSplitGroups(lines, [...lines, ...held], "ICICI", d), []);
+    assert.equal(lines[0].status, "unmatched");
+  });
+});
+
+describe("review tooltip + assumed-by-order flag", () => {
+  test("reviewCandidatesDetail lists the same window candidates (calendar-day math, from txn_date)", () => {
+    const d = { collections: [col(1, "2026-01-05", 1000, "A B"), col(2, "2026-01-11", 1000, "C D")] };
+    const detail = reviewCandidatesDetail(
+      { account: "ICICI", txn_date: "2026-01-06", deposit: 1000, withdrawal: 0, description: "", reference: "" },
+      d
+    );
+    assert.equal(detail.rows.length, 1); // 2026-01-11 is 5 days out, outside the 4-day window
+  });
+
+  test("isOrderAssumed reads the sentinel score only on matched lines", () => {
+    assert.equal(isOrderAssumed({ status: "matched", match_score: String(ORDER_ASSUMED_SCORE) }), true);
+    assert.equal(isOrderAssumed({ status: "matched", match_score: "0.94" }), false);
+    assert.equal(isOrderAssumed({ status: "review", match_score: null }), false);
   });
 });
