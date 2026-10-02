@@ -4,6 +4,7 @@ import { formatMoney, expenseCode } from "../lib/format.js";
 import { SearchBox, Pager } from "../components/SearchPager.jsx";
 import { usePagedList } from "../lib/usePagedList.js";
 import { downloadTemplate } from "../lib/templates.js";
+import { EXPENSE_SEARCH_FIELDS } from "../lib/bankReference.js";
 
 const FALLBACK_CATEGORIES = [
   "Rent", "Salary", "Commission", "Electricity", "Internet",
@@ -34,7 +35,7 @@ export default function ExpensesPage({
 
   const catNames = categories.length ? categories.map((c) => c.name) : FALLBACK_CATEGORIES;
   const paged = usePagedList(expenses, {
-    searchFields: ["category", "account", "description", "reference"],
+    searchFields: EXPENSE_SEARCH_FIELDS,
     pageSize: 20,
   });
 
@@ -54,6 +55,7 @@ export default function ExpensesPage({
           Import Expenses
           <input type="file" accept=".xlsx,.xls,.csv" onChange={onFileSelected} hidden />
         </label>
+        <small className="table-sub">Bank Reference is filled by bank sync and is ignored on upload.</small>
       </div>
 
       <div className="two-column">

@@ -4,6 +4,7 @@ import { formatMoney } from "../lib/format.js";
 import { SearchBox, Pager } from "../components/SearchPager.jsx";
 import { usePagedList } from "../lib/usePagedList.js";
 import { downloadTemplate } from "../lib/templates.js";
+import { TRANSFER_SEARCH_FIELDS, TRANSFER_TEMPLATE_HEADERS } from "../lib/bankReference.js";
 
 // Loaded on first use so they stay out of the page chunk until opened.
 const MatchLineModal = lazy(() => import("../components/MatchLineModal.jsx"));
@@ -139,7 +140,7 @@ function TransfersView({ isAdmin, transfers, form, setForm, onSubmit, saving, fo
   const [editing, setEditing] = useState(null);
   const [rowBusy, setRowBusy] = useState(false);
   const paged = usePagedList(transfers, {
-    searchFields: ["from_account", "to_account", "purpose", "reference", "note"],
+    searchFields: TRANSFER_SEARCH_FIELDS,
     pageSize: 20,
   });
 
@@ -155,8 +156,8 @@ function TransfersView({ isAdmin, transfers, form, setForm, onSubmit, saving, fo
                 onClick={() =>
                   downloadTemplate(
                     "transfer_template.xlsx",
-                    ["Date", "From Account", "To Account", "Amount", "Purpose", "Reference", "Note"],
-                    ["2026-06-01", "Cash", "ICICI", 50000, "Cash deposit", "DEP-01", ""]
+                    TRANSFER_TEMPLATE_HEADERS,
+                    ["2026-06-01", "Cash", "ICICI", 50000, "Cash deposit", "DEP-01", "", ""]
                   )
                 }
               >
@@ -168,6 +169,7 @@ function TransfersView({ isAdmin, transfers, form, setForm, onSubmit, saving, fo
               </label>
             </div>
           </div>
+          <small className="table-sub">Bank Reference is filled by bank sync and is ignored on upload.</small>
           <form onSubmit={onSubmit}>
             <ErrorBanner error={formError} />
             <Input label="Date" type="date" value={form.date} onChange={(v) => set({ date: v })} required />

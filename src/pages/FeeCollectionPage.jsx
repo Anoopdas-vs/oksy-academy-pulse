@@ -4,6 +4,7 @@ import { formatMoney, receiptNo } from "../lib/format.js";
 import { SearchBox, Pager } from "../components/SearchPager.jsx";
 import { usePagedList } from "../lib/usePagedList.js";
 import { downloadTemplate } from "../lib/templates.js";
+import { FEE_TEMPLATE_HEADERS } from "../lib/bankReference.js";
 import { outstanding as outstandingFor, creditBalance as creditFor, COLLECTION_SEARCH_FIELDS } from "../lib/fees.js";
 import StudentPicker from "../components/StudentPicker.jsx";
 import { validateBankReference, normalizeBankReference } from "../lib/validation.js";
@@ -61,8 +62,8 @@ export default function FeeCollectionPage({
       <div className="page-actions">
         <button className="button secondary" onClick={() => downloadTemplate(
           "fee_collection_template.xlsx",
-          ["Receipt No", "Student ID", "Date", "Type", "Payment A/C", "Amount", "Reference"],
-          ["", "DBHM001", "2026-06-01", "Course Fee", "HDFC", 20000, "HDFC-002"]
+          FEE_TEMPLATE_HEADERS,
+          ["", "DBHM001", "2026-06-01", "Course Fee", "HDFC", 20000, "HDFC-002", ""]
         )}>
           Download Template
         </button>
@@ -70,6 +71,7 @@ export default function FeeCollectionPage({
           Import Excel
           <input type="file" accept=".xlsx,.xls,.csv" onChange={onFileSelected} hidden />
         </label>
+        <small className="table-sub">Bank Reference is filled by bank sync and is ignored on upload.</small>
       </div>
 
       <div className="two-column">
