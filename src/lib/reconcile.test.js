@@ -41,6 +41,7 @@ import {
   setMasterDate,
   selectAllSync,
   groupSyncRuns,
+  multiAccountTransferKeys,
   LINK_CONFLICT_MESSAGE,
 } from "./reconcile.js";
 
@@ -1021,7 +1022,7 @@ describe("phase 4 fixes", () => {
     assert.equal(hasBankReference(undefined), false);
   });
 
-  test("book-only treats an entry linked from ANOTHER statement or another account as linked", () => {
+  test("book-only treats an entry linked from ANOTHER statement as linked; a transfer linked on another account is still book-only here", () => {
     const data = {
       collections: [
         { id: 1, account: "HDFC", date: "2026-03-05", amount: 100, student_name: "A" },
@@ -1034,9 +1035,10 @@ describe("phase 4 fixes", () => {
     const otherStatementLine = { id: 50, statement_id: 11, account: "HDFC", status: "matched", links: [{ bookKind: "collection", bookId: 1 }] };
     const otherAccountLine = { id: 60, statement_id: 12, account: "ICICI", status: "matched", links: [{ bookKind: "transfer", bookId: 7 }] };
     const out = bookOnlyEntries(statement, [otherStatementLine, otherAccountLine], data).map((e) => e.key);
-    assert.deepEqual(out, ["collection:2"]);
-    // the link popup excludes the same entries
-    assert.deepEqual(linkedKeys([otherStatementLine, otherAccountLine]).sort(), ["collection:1", "transfer:7"]);
+    assert.deepEqual(out, ["collection:2", "transfer:7"]);
+    // the link popup for HDFC excludes the same entries; for ICICI the transfer is taken
+    assert.deepEqual(linkedKeys([otherStatementLine, otherAccountLine], "HDFC").sort(), ["collection:1"]);
+    assert.deepEqual(linkedKeys([otherStatementLine, otherAccountLine], "ICICI").sort(), ["collection:1", "transfer:7"]);
   });
 });
 
@@ -1089,7 +1091,7 @@ describe("Sync to books — preview and payload", () => {
 
   test("date: only when the book date differs; month and year changes are flagged", () => {
     assert.equal(item("collection:1").date, null);
-    assert.deepEqual(item("collection:2").date, { from: "2026-03-04", to: "2026-03-05", monthChanges: false });
+    assert.deepEqual(item("collection:2").date, { from: "2026-03-04", to: "2026-03-05", monthChanges: false, blocked: false });
     assert.equal(item("collection:3").date.monthChanges, true); // 28 Feb -> 2 Mar
     assert.equal(item("collection:4").date.monthChanges, true); // 31 Dec 2025 -> 2 Jan 2026
   });
@@ -1120,7 +1122,7 @@ describe("Sync to books — preview and payload", () => {
     assert.ok(payload.every((p) => p.field === "bank_reference" && p.overwrite === false));
     const fill = payload.find((p) => p.book_id === 1);
     assert.deepEqual(fill, {
-      book_kind: "collection", book_id: 1, field: "bank_reference", new_value: "UPI/111/aaa", expected_old: "", overwrite: false,
+      line_id: 1, book_kind: "collection", book_id: 1, field: "bank_reference", new_value: "UPI/111/aaa", expected_old: "", overwrite: false,
     });
     assert.ok(!payload.some((p) => p.book_id === 2)); // conflict not ticked -> not included
   });
@@ -1130,7 +1132,7 @@ describe("Sync to books — preview and payload", () => {
     sel.refKeys.add("collection:2");
     const p = buildSyncPayload(preview, sel).find((x) => x.book_id === 2);
     assert.deepEqual(p, {
-      book_kind: "collection", book_id: 2, field: "bank_reference", new_value: "UPI/222/bbb", expected_old: "OLD NOTE", overwrite: true,
+      line_id: 2, book_kind: "collection", book_id: 2, field: "bank_reference", new_value: "UPI/222/bbb", expected_old: "OLD NOTE", overwrite: true,
     });
   });
 
@@ -1142,17 +1144,32 @@ describe("Sync to books — preview and payload", () => {
     const datePayload = buildSyncPayload(preview, sel).filter((p) => p.field === "date");
     assert.deepEqual(datePayload.map((p) => p.book_id), [2]);
     assert.deepEqual(datePayload[0], {
-      book_kind: "collection", book_id: 2, field: "date", new_value: "2026-03-05", expected_old: "2026-03-04", overwrite: false,
+      line_id: 2, book_kind: "collection", book_id: 2, field: "date", new_value: "2026-03-05", expected_old: "2026-03-04", overwrite: false,
     });
     sel.dateKeys.add("collection:3");
     assert.ok(buildSyncPayload(preview, sel).some((p) => p.field === "date" && p.book_id === 3));
     assert.equal(setMasterDate(preview, sel, false).dateKeys.size, 0);
   });
 
-  test("select all ticks every actionable change; select none clears", () => {
+  test("select all ticks fills and plain date changes but leaves conflicts and month changes unticked", () => {
     const all = selectAllSync(preview, true);
-    assert.equal(buildSyncPayload(preview, all).length, 4 + 1 + 3); // fills + conflict + dates
+    assert.equal(all.refKeys.has("collection:2"), false); // conflict
+    assert.equal(all.dateKeys.has("collection:3"), false); // month change
+    assert.equal(all.dateKeys.has("collection:4"), false); // year change
+    assert.equal(all.dateKeys.has("collection:2"), true); // same-month date fix
+    const payload = buildSyncPayload(preview, all);
+    assert.equal(payload.length, 4 + 1); // four fills + one same-month date
+    assert.ok(!payload.some((p) => p.overwrite));
     assert.equal(buildSyncPayload(preview, selectAllSync(preview, false)).length, 0);
+  });
+
+  test("every payload item carries the bank line it was previewed against", () => {
+    const sel = selectAllSync(preview, true);
+    sel.refKeys.add("collection:2");
+    buildSyncPayload(preview, sel).forEach((p) => {
+      const line = lines.find((l) => l.links.some((k) => k.bookId === p.book_id));
+      assert.equal(p.line_id, line.id);
+    });
   });
 
   test("sync runs are grouped by run id with change counts and undone state", () => {
@@ -1162,5 +1179,63 @@ describe("Sync to books — preview and payload", () => {
       { run_id: "b", synced_at: "2026-03-02T10:00:00Z", synced_by: "u1", undone_at: "2026-03-02T11:00:00Z" },
     ]);
     assert.deepEqual(runs.map((r) => [r.runId, r.changes, r.isUndone]), [["b", 1, true], ["a", 2, false]]);
+  });
+});
+
+describe("inter-bank transfers: one link per account", () => {
+  const data = {
+    collections: [],
+    expenses: [],
+    transfers: [{ id: 7, from_account: "ICICI", to_account: "HDFC", date: "2026-03-05", amount: 25000, purpose: "fund move" }],
+  };
+  const iciciLine = {
+    id: 1, seq: 1, account: "ICICI", statement_id: 1, status: "matched", txn_date: "2026-03-05",
+    description: "TRF TO HDFC", reference: "", deposit: 0, withdrawal: 25000,
+    links: [{ bookKind: "transfer", bookId: 7, source: "manual" }],
+  };
+  const hdfcLine = {
+    id: 2, seq: 1, account: "HDFC", statement_id: 2, status: "unmatched", txn_date: "2026-03-05",
+    description: "TRF FROM ICICI", reference: "", deposit: 25000, withdrawal: 0, links: [],
+  };
+  const all = [iciciLine, hdfcLine];
+
+  test("a transfer linked on the ICICI side is still a link candidate on the HDFC side", () => {
+    const keys = linkCandidates(hdfcLine, "HDFC", data, linkedKeys(all, "HDFC")).map((c) => c.key);
+    assert.deepEqual(keys, ["transfer:7"]);
+    // ...but not offered again on ICICI
+    const iciciOpen = { ...hdfcLine, account: "ICICI", deposit: 0, withdrawal: 25000 };
+    assert.deepEqual(linkCandidates(iciciOpen, "ICICI", data, linkedKeys(all, "ICICI")), []);
+  });
+
+  test("the HDFC re-run can auto-match it (exact date + amount)", () => {
+    const plan = planRerun([hdfcLine], all, "HDFC", data);
+    assert.equal(plan[0].new_status, "matched");
+    assert.deepEqual(plan[0].links, [{ bookKind: "transfer", bookId: 7, source: "auto_exact" }]);
+  });
+
+  test("book-only on HDFC lists it while unlinked there, and drops it once both sides are linked", () => {
+    const hdfcStatement = { account: "HDFC", period_start: "2026-03-01", period_end: "2026-03-31" };
+    assert.deepEqual(bookOnlyEntries(hdfcStatement, all, data).map((e) => e.key), ["transfer:7"]);
+    const linkedBoth = [iciciLine, { ...hdfcLine, status: "matched", links: [{ bookKind: "transfer", bookId: 7, source: "manual" }] }];
+    assert.deepEqual(bookOnlyEntries(hdfcStatement, linkedBoth, data), []);
+  });
+
+  test("a transfer linked on two accounts gets a blocked date change and never enters the payload", () => {
+    const both = [
+      { ...iciciLine, txn_date: "2026-03-06" },
+      { ...hdfcLine, txn_date: "2026-03-06", status: "matched", links: [{ bookKind: "transfer", bookId: 7, source: "manual" }] },
+    ];
+    const multi = multiAccountTransferKeys(both);
+    assert.deepEqual([...multi], ["transfer:7"]);
+    const ledger = ledgerByKeyOf(data);
+    const rows = buildReconRows([both[1]], ledger);
+    const preview = buildSyncPreview(rows, ledger, { multiAccountKeys: multi });
+    const item = preview.items[0];
+    assert.equal(item.date.blocked, true);
+    assert.equal(preview.totals.blockedDates, 1);
+    assert.equal(preview.totals.dateChanges, 0);
+    const sel = selectAllSync(preview, true);
+    sel.dateKeys.add(item.key); // even a forced tick is ignored
+    assert.ok(!buildSyncPayload(preview, sel).some((p) => p.field === "date"));
   });
 });

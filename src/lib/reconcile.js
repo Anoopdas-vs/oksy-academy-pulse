@@ -224,18 +224,24 @@ export const isOrderAssumed = (line) =>
   line?.status === "matched" && Number(line.match_score) === ORDER_ASSUMED_SCORE;
 
 const OPEN_STATUSES = new Set(["review", "unmatched"]);
-// Entries ("kind:id") already linked to ANY stored bank line -- any
-// statement, any account, any status -- because the database allows each
-// book entry only one bank line. A line's `links` (see attachLinks) win;
-// lines without them fall back to the legacy match_kind/match_id pair.
-const usedKeysOf = (lines) =>
-  lines.flatMap((l) =>
-    l.links?.length
-      ? l.links.map((k) => `${k.bookKind}:${k.bookId}`)
+// Entries ("kind:id") already linked to a stored bank line. The database
+// allows a book entry one bank line PER ACCOUNT (migration 36): collections and
+// expenses belong to one account, so any link counts; a transfer moves money
+// between two accounts and appears on both statements, so for a transfer only
+// links from lines of `account` count. Without `account`, every link counts.
+// A line's `links` (see attachLinks) win; lines without them fall back to the
+// legacy match_kind/match_id pair.
+const usedKeysOf = (lines, account = null) =>
+  lines.flatMap((l) => {
+    const keys = l.links?.length
+      ? l.links.map((k) => ({ kind: k.bookKind, id: k.bookId }))
       : (l.status === "matched" || l.status === "classified") && l.match_kind && l.match_id != null
-        ? [`${l.match_kind}:${l.match_id}`]
-        : []
-  );
+        ? [{ kind: l.match_kind, id: l.match_id }]
+        : [];
+    return keys
+      .filter((k) => k.kind !== "transfer" || account === null || l.account === account)
+      .map((k) => `${k.kind}:${k.id}`);
+  });
 const asAutoLine = (l) => ({
   date: l.txn_date,
   description: l.description,
@@ -291,7 +297,7 @@ function rematchOpen(statementLines, allLines, account, data) {
     open.map((l) => ({ ...asAutoLine(l), id: l.id, seq: l.seq })),
     account,
     data,
-    { usedKeys: usedKeysOf(allLines) }
+    { usedKeys: usedKeysOf(allLines, account) }
   );
   return { open, results };
 }
@@ -321,7 +327,7 @@ function subsetsSumming(entries, total, maxSize, valueOf = (e) => Math.round(Mat
 //   -> [{ lines: [line...], total, options: [[entry...]...] }]
 export function suggestSplitGroups(statementLines, allLines, account, data, dayWindow = 4) {
   const ledger = accountLedger(account, data);
-  const used = new Set(usedKeysOf(allLines));
+  const used = new Set(usedKeysOf(allLines, account));
   const open = statementLines.filter(
     (l) => OPEN_STATUSES.has(l.status) && !rankCandidates(asAutoLine(l), ledger, { used, dayWindow }).length
   );
@@ -1066,7 +1072,7 @@ export function buildManualLinkPayload(lineId, entries) {
 // Entries of the statement's account dated inside its period that no bank
 // line of that account links to: in the books, not in the statement.
 export function bookOnlyEntries(statement, allLines, data) {
-  const used = new Set(usedKeysOf(allLines));
+  const used = new Set(usedKeysOf(allLines, statement.account));
   const labels = ledgerByKeyOf(data);
   const from = statement.period_start ? isoDay(statement.period_start) : null;
   const to = statement.period_end ? isoDay(statement.period_end) : null;
@@ -1079,8 +1085,22 @@ export function bookOnlyEntries(statement, allLines, data) {
     .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0) || a.kind.localeCompare(b.kind) || Number(a.id) - Number(b.id));
 }
 
-// Entries ("kind:id") already linked to any stored bank line (see usedKeysOf).
-export const linkedKeys = (allLines) => usedKeysOf(allLines);
+// Entries ("kind:id") already linked for `account` (see usedKeysOf).
+export const linkedKeys = (allLines, account) => usedKeysOf(allLines, account);
+
+// Transfers linked on more than one account. Their date cannot be synced (the
+// two bank lines may carry different dates), see migration 36.
+export function multiAccountTransferKeys(allLines) {
+  const accounts = new Map();
+  allLines.forEach((l) =>
+    (l.links || []).forEach((k) => {
+      if (k.bookKind !== "transfer") return;
+      const key = `transfer:${k.bookId}`;
+      accounts.set(key, new Set([...(accounts.get(key) || []), l.account]));
+    })
+  );
+  return new Set([...accounts].filter(([, set]) => set.size > 1).map(([key]) => key));
+}
 
 // True when an entry already has a recorded bank_reference (never overwrite).
 export const hasBankReference = (entry) => String(entry?.bank_reference ?? "").trim() !== "";
@@ -1109,8 +1129,10 @@ const SKIP_REASON = {
 // rows = buildReconRows() output; ledger = ledgerByKeyOf(). For every entry
 // linked to an eligible line:
 //   reference: { status: 'fill' | 'conflict' | 'same', current, next }
-//   date: null | { from, to, monthChanges }   (only when the book date differs)
-export function buildSyncPreview(rows, ledger) {
+//   date: null | { from, to, monthChanges, blocked }  (only when the book date
+//         differs; `blocked` = a transfer linked on two accounts, see
+//         multiAccountTransferKeys -- its date is corrected by hand)
+export function buildSyncPreview(rows, ledger, { multiAccountKeys = new Set() } = {}) {
   const items = [];
   const skippedByReason = {};
   let eligible = 0;
@@ -1145,7 +1167,12 @@ export function buildSyncPreview(rows, ledger) {
         reference: { status, current, next },
         date:
           entryDate !== r.bankDate
-            ? { from: entryDate, to: r.bankDate, monthChanges: monthOf(entryDate) !== monthOf(r.bankDate) }
+            ? {
+                from: entryDate,
+                to: r.bankDate,
+                monthChanges: monthOf(entryDate) !== monthOf(r.bankDate),
+                blocked: multiAccountKeys.has(`${k.kind}:${k.bookId}`),
+              }
             : null,
       });
     });
@@ -1160,8 +1187,9 @@ export function buildSyncPreview(rows, ledger) {
       skipped,
       fills: count((i) => i.reference.status === "fill"),
       conflicts: count((i) => i.reference.status === "conflict"),
-      dateChanges: count((i) => i.date),
-      monthChanges: count((i) => i.date?.monthChanges),
+      dateChanges: count((i) => i.date && !i.date.blocked),
+      monthChanges: count((i) => i.date?.monthChanges && !i.date.blocked),
+      blockedDates: count((i) => i.date?.blocked),
     },
   };
 }
@@ -1180,22 +1208,26 @@ export function setMasterDate(preview, selection, on) {
   preview.items.forEach((i) => {
     if (!i.date) return;
     if (!on) dateKeys.delete(i.key);
-    else if (!i.date.monthChanges) dateKeys.add(i.key);
+    else if (!i.date.monthChanges && !i.date.blocked) dateKeys.add(i.key);
   });
   return { ...selection, dateKeys };
 }
 
-// Explicit Select all / none buttons (all = every actionable change).
+// Select all / none. "All" never ticks reference conflicts or month-change
+// dates -- those always need their own tick -- nor blocked transfer dates.
 export function selectAllSync(preview, on) {
   return on
     ? {
-        refKeys: new Set(preview.items.filter((i) => i.reference.status !== "same").map((i) => i.key)),
-        dateKeys: new Set(preview.items.filter((i) => i.date).map((i) => i.key)),
+        refKeys: new Set(preview.items.filter((i) => i.reference.status === "fill").map((i) => i.key)),
+        dateKeys: new Set(
+          preview.items.filter((i) => i.date && !i.date.monthChanges && !i.date.blocked).map((i) => i.key)
+        ),
       }
     : { refKeys: new Set(), dateKeys: new Set() };
 }
 
-// Payload for sync_bank_entries. A conflict is included only when ticked (and
+// Payload for sync_bank_entries. Every item names the bank line it was
+// previewed against (line_id). A conflict is included only when ticked (and
 // then carries overwrite: true); expected_old is the value seen in the preview.
 export function buildSyncPayload(preview, selection) {
   const payload = [];
@@ -1203,6 +1235,7 @@ export function buildSyncPayload(preview, selection) {
     const ref = i.reference;
     if (selection.refKeys.has(i.key) && (ref.status === "fill" || ref.status === "conflict")) {
       payload.push({
+        line_id: i.lineId,
         book_kind: i.kind,
         book_id: i.bookId,
         field: "bank_reference",
@@ -1211,8 +1244,9 @@ export function buildSyncPayload(preview, selection) {
         overwrite: ref.status === "conflict",
       });
     }
-    if (selection.dateKeys.has(i.key) && i.date) {
+    if (selection.dateKeys.has(i.key) && i.date && !i.date.blocked) {
       payload.push({
+        line_id: i.lineId,
         book_kind: i.kind,
         book_id: i.bookId,
         field: "date",

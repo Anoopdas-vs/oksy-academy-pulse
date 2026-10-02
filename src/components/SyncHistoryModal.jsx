@@ -56,7 +56,7 @@ export default function SyncHistoryModal({ onClose, onLoadRuns, onUndo }) {
                   {r.isUndone ? "Undone" : "Applied"}
                   {results[r.runId] && (
                     <div className="recon-reason">
-                      {results[r.runId].restored} restored, {results[r.runId].skipped} skipped
+                      Undone ({results[r.runId].restored} restored, {results[r.runId].skipped} skipped)
                     </div>
                   )}
                 </td>

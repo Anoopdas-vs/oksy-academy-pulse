@@ -8,6 +8,7 @@ import {
   buildReconRows,
   defaultSyncSelection,
   ledgerByKeyOf,
+  multiAccountTransferKeys,
   reviewHints,
   selectAllSync,
   setMasterDate,
@@ -28,7 +29,9 @@ export default function SyncBankModal({ statement, lines, allLines, data, onClos
   const preview = useMemo(() => {
     const ledger = ledgerByKeyOf(data);
     const hints = reviewHints(lines, allLines, statement.account, data);
-    return buildSyncPreview(buildReconRows(lines, ledger, hints), ledger);
+    return buildSyncPreview(buildReconRows(lines, ledger, hints), ledger, {
+      multiAccountKeys: multiAccountTransferKeys(allLines),
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lines, allLines, statement, data.collections, data.expenses, data.transfers]);
 
@@ -82,6 +85,7 @@ export default function SyncBankModal({ statement, lines, allLines, data, onClos
         <span className="recon-chip">{t.conflicts} conflicts</span>
         <span className="recon-chip">{t.dateChanges} date corrections</span>
         <span className="recon-chip">{t.monthChanges} month changes</span>
+        {t.blockedDates > 0 && <span className="recon-chip">{t.blockedDates} transfer dates to fix by hand</span>}
       </div>
       <p className="field-hint sync-note">
         {t.eligible} lines eligible, {t.skipped} skipped{skippedText ? ` (${skippedText})` : ""}. Only lines whose
@@ -98,8 +102,10 @@ export default function SyncBankModal({ statement, lines, allLines, data, onClos
       )}
       {undoResult && (
         <div className="info-box" role="status">
-          <strong>Undone</strong>
-          <span>{undoResult.restored} restored, {undoResult.skipped} skipped (changed since the sync).</span>
+          <strong>
+            Undone ({undoResult.restored} restored, {undoResult.skipped} skipped)
+          </strong>
+          {undoResult.skipped > 0 && <span>Skipped entries were changed again after the sync and were left as they are.</span>}
         </div>
       )}
 
@@ -108,7 +114,7 @@ export default function SyncBankModal({ statement, lines, allLines, data, onClos
           <input type="checkbox" checked={masterDate} onChange={(e) => toggleMaster(e.target.checked)} /> Book date → Bank date
         </label>
         <button type="button" className="button ghost small" onClick={() => setSelection(selectAllSync(preview, true))}>
-          Select all
+          Select all fills + dates
         </button>
         <button type="button" className="button ghost small" onClick={() => setSelection(selectAllSync(preview, false))}>
           Select none
@@ -156,7 +162,11 @@ export default function SyncBankModal({ statement, lines, allLines, data, onClos
                     )}
                   </td>
                   <td>
-                    {i.date ? (
+                    {i.date?.blocked ? (
+                      <span title="Transfer is linked in two accounts; correct its date manually.">
+                        {i.date.from} → {i.date.to} <span className="mini-tag warn">Linked in two accounts — fix by hand</span>
+                      </span>
+                    ) : i.date ? (
                       <label className="sync-cell">
                         <input
                           type="checkbox"
