@@ -4,9 +4,7 @@ import { formatMoney, expenseCode } from "../lib/format.js";
 import { SearchBox, Pager } from "../components/SearchPager.jsx";
 import { usePagedList } from "../lib/usePagedList.js";
 import { downloadTemplate } from "../lib/templates.js";
-import BankReferenceCell from "../components/BankReferenceCell.jsx";
 import { EXPENSE_SEARCH_FIELDS } from "../lib/bankReference.js";
-import { normalizeBankReference, validateBankReference } from "../lib/validation.js";
 
 const FALLBACK_CATEGORIES = [
   "Rent", "Salary", "Commission", "Electricity", "Internet",
@@ -57,6 +55,7 @@ export default function ExpensesPage({
           Import Expenses
           <input type="file" accept=".xlsx,.xls,.csv" onChange={onFileSelected} hidden />
         </label>
+        <small className="table-sub">Bank Reference is filled by bank sync and is ignored on upload.</small>
       </div>
 
       <div className="two-column">
@@ -109,7 +108,7 @@ export default function ExpensesPage({
             <SearchBox
               value={paged.query}
               onChange={paged.setQuery}
-              placeholder="Search category, account, description, UTR..."
+              placeholder="Search category, account, description..."
             />
             <Pager
               page={paged.page}
@@ -123,16 +122,16 @@ export default function ExpensesPage({
             <thead>
               <tr>
                 <th>ID</th><th>Date</th><th>Category</th><th>A/C</th>
-                <th>Amount</th><th>Description</th><th>Bank reference</th>{showActions && <th></th>}
+                <th>Amount</th><th>Description</th>{showActions && <th></th>}
               </tr>
             </thead>
             <tbody>
               {loading && (
-                <tr><td colSpan={showActions ? 8 : 7} className="table-empty">Loading expenses...</td></tr>
+                <tr><td colSpan={showActions ? 7 : 6} className="table-empty">Loading expenses...</td></tr>
               )}
               {!loading && paged.pageRows.length === 0 && (
                 <tr>
-                  <td colSpan={showActions ? 8 : 7} className="table-empty">
+                  <td colSpan={showActions ? 7 : 6} className="table-empty">
                     {paged.query ? "No expenses matching your search." : "No expenses in this period."}
                   </td>
                 </tr>
@@ -149,7 +148,6 @@ export default function ExpensesPage({
                   </td>
                   <td className="amount-negative">{formatMoney(e.amount)}</td>
                   <td>{e.description}</td>
-                  <td><BankReferenceCell value={e.bank_reference} /></td>
                   {showActions && (
                     <td className="row-actions">
                       {canEdit && (
@@ -207,20 +205,11 @@ function EditExpenseForm({ row, catNames, busy, onCancel, onSave }) {
     amount: row.amount,
     reference: row.reference || "",
     description: row.description || "",
-    bank_reference: row.bank_reference || "",
   });
-  const [refError, setRefError] = useState("");
   const set = (p) => setF({ ...f, ...p });
-  const submit = (e) => {
-    e.preventDefault();
-    const problem = validateBankReference(f.bank_reference, row.bank_reference);
-    setRefError(problem);
-    if (problem) return;
-    onSave({ ...f, bank_reference: normalizeBankReference(f.bank_reference) });
-  };
 
   return (
-    <form className="form-grid" onSubmit={submit}>
+    <form className="form-grid" onSubmit={(e) => { e.preventDefault(); onSave(f); }}>
       <Input label="Date" type="date" value={f.date} onChange={(v) => set({ date: v })} required />
       <div className="field">
         <label>Category</label>
@@ -237,13 +226,6 @@ function EditExpenseForm({ row, catNames, busy, onCancel, onSave }) {
       <Input label="Amount" type="number" min="0.01" step="0.01" value={f.amount} onChange={(v) => set({ amount: v })} required />
       <Input label="Reference No." value={f.reference} onChange={(v) => set({ reference: v })} />
       <Input label="Description" value={f.description} onChange={(v) => set({ description: v })} />
-      <Input
-        label="UTR / Reference no"
-        value={f.bank_reference}
-        onChange={(v) => set({ bank_reference: v })}
-        error={refError}
-        hint="UPI/bank reference number (e.g. 534608284353). Used to match the bank statement automatically."
-      />
       <div className="form-actions">
         <button type="button" className="button secondary" onClick={onCancel} disabled={busy}>Cancel</button>
         <button type="submit" className="button primary" disabled={busy}>{busy ? "Saving..." : "Save changes"}</button>

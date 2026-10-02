@@ -4,28 +4,11 @@ import { readFileSync } from "node:fs";
 import { filterRows } from "./usePagedList.js";
 import { COLLECTION_SEARCH_FIELDS } from "./fees.js";
 import {
-  extractUtr,
   EXPENSE_SEARCH_FIELDS,
   TRANSFER_SEARCH_FIELDS,
   FEE_TEMPLATE_HEADERS,
   TRANSFER_TEMPLATE_HEADERS,
 } from "./bankReference.js";
-
-test("extractUtr picks the digit run of 9+ digits", () => {
-  assert.equal(extractUtr("UPI/534608284353/UPI/x@ybl/SBI"), "534608284353");
-});
-
-test("extractUtr returns empty when there is no 9+ digit run", () => {
-  assert.equal(extractUtr("NEFT/RENT/JAN 2026"), "");
-  assert.equal(extractUtr("ref 12345678"), "");
-  assert.equal(extractUtr(null), "");
-  assert.equal(extractUtr(undefined), "");
-});
-
-test("extractUtr takes the longest run when several exist (first on a tie)", () => {
-  assert.equal(extractUtr("A123456789 B1234567890123 C987654321"), "1234567890123");
-  assert.equal(extractUtr("111111111 / 222222222"), "111111111");
-});
 
 const expenses = [
   { id: 1, category: "Rent", account: "HDFC", description: "Jan rent", reference: "R1", bank_reference: "NEFT/UTR998877665544" },

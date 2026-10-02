@@ -4,7 +4,6 @@ import { formatMoney, receiptNo } from "../lib/format.js";
 import { SearchBox, Pager } from "../components/SearchPager.jsx";
 import { usePagedList } from "../lib/usePagedList.js";
 import { downloadTemplate } from "../lib/templates.js";
-import BankReferenceCell from "../components/BankReferenceCell.jsx";
 import { FEE_TEMPLATE_HEADERS } from "../lib/bankReference.js";
 import { outstanding as outstandingFor, creditBalance as creditFor, COLLECTION_SEARCH_FIELDS } from "../lib/fees.js";
 import StudentPicker from "../components/StudentPicker.jsx";
@@ -72,6 +71,7 @@ export default function FeeCollectionPage({
           Import Excel
           <input type="file" accept=".xlsx,.xls,.csv" onChange={onFileSelected} hidden />
         </label>
+        <small className="table-sub">Bank Reference is filled by bank sync and is ignored on upload.</small>
       </div>
 
       <div className="two-column">
@@ -163,7 +163,7 @@ export default function FeeCollectionPage({
             <SearchBox
               value={paged.query}
               onChange={paged.setQuery}
-              placeholder="Search student ID, name, type, UTR..."
+              placeholder="Search student ID, name, type..."
             />
             <Pager
               page={paged.page}
@@ -178,18 +178,18 @@ export default function FeeCollectionPage({
               <tr>
                 <th>Receipt</th><th>Date</th><th>Student</th><th>Type</th>
                 <th>A/C</th>
-                <th>Amount</th><th>Outstanding</th><th>Credit</th><th>Bank reference</th>{showActions && <th></th>}
+                <th>Amount</th><th>Outstanding</th><th>Credit</th>{showActions && <th></th>}
               </tr>
             </thead>
             <tbody>
               {loading && (
                 <tr>
-                  <td colSpan={showActions ? 10 : 9} className="table-empty">Loading collections...</td>
+                  <td colSpan={showActions ? 9 : 8} className="table-empty">Loading collections...</td>
                 </tr>
               )}
               {!loading && paged.pageRows.length === 0 && (
                 <tr>
-                  <td colSpan={showActions ? 10 : 9} className="table-empty">
+                  <td colSpan={showActions ? 9 : 8} className="table-empty">
                     {paged.query ? "No fee collections matching your search." : "No collections in this period."}
                   </td>
                 </tr>
@@ -230,7 +230,6 @@ export default function FeeCollectionPage({
                         "—"
                       )}
                     </td>
-                    <td><BankReferenceCell value={item.bank_reference} /></td>
                     {showActions && (
                       <td className="row-actions">
                         {canEdit && (
