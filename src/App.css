@@ -3134,3 +3134,31 @@ tfoot td {
   margin-right: auto;
   font-size: 12px;
 }
+
+/* Bank reference column in Fee / Expense / Transfer lists */
+.bankref-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 200px;
+}
+
+.bankref-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.bankref-copy {
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  color: var(--muted);
+  padding: 0 2px;
+  font-size: 12px;
+}
+
+.bankref-copy:hover {
+  color: inherit;
+}
