@@ -6,6 +6,7 @@ import StudentPicker from "../components/StudentPicker.jsx";
 import { SearchBox, Pager } from "../components/SearchPager.jsx";
 import { usePagedList } from "../lib/usePagedList.js";
 import { downloadTemplate } from "../lib/templates.js";
+import LinkEntryModal from "../components/LinkEntryModal.jsx";
 import {
   reconciliationSummary,
   matchKindLabel,
@@ -17,6 +18,8 @@ import {
   reviewHints,
   suggestSplitGroups,
   ledgerByKeyOf,
+  bookOnlyEntries,
+  linkedKeys,
   buildReconRows,
   reconFilterCounts,
   reconRowMatchesFilter,
@@ -52,6 +55,7 @@ export default function BankingPage({
   onIgnoreLine,
   onUnmatchLine,
   onApplyRerun,
+  onLinkLine,
   onDeleteStatement,
   loading = false,
 }) {
@@ -114,6 +118,7 @@ export default function BankingPage({
           onIgnoreLine={onIgnoreLine}
           onUnmatchLine={onUnmatchLine}
           onApplyRerun={onApplyRerun}
+          onLinkLine={onLinkLine}
           onDeleteStatement={onDeleteStatement}
         />
       )}
@@ -322,11 +327,13 @@ function ReconcileView({
   onIgnoreLine,
   onUnmatchLine,
   onApplyRerun,
+  onLinkLine,
   onDeleteStatement,
 }) {
   const [account, setAccount] = useState("ICICI");
   const [openId, setOpenId] = useState(null);
   const [classifying, setClassifying] = useState(null); // a line row
+  const [linking, setLinking] = useState(null); // { line, account } for the Link entry popup
   const [rerun, setRerun] = useState(null); // { statementId, changes } dry-run awaiting confirmation
   const [tableView, setTableView] = useState("new"); // "new" review table | "classic" table
 
@@ -485,9 +492,11 @@ function ReconcileView({
                 lines={lines}
                 allLines={bankLines}
                 account={st.account}
+                statement={st}
                 data={data}
                 isAdmin={isAdmin}
                 onClassify={setClassifying}
+                onLink={(ln) => setLinking({ line: ln, account: st.account })}
                 onIgnoreLine={onIgnoreLine}
                 onUnmatchLine={onUnmatchLine}
               />
@@ -526,6 +535,17 @@ function ReconcileView({
           </div>
         );
       })}
+
+      {linking && (
+        <LinkEntryModal
+          line={linking.line}
+          account={linking.account}
+          data={data}
+          usedKeys={linkedKeys(bankLines, linking.account)}
+          onClose={() => setLinking(null)}
+          onConfirm={(entries) => onLinkLine(linking.line, entries)}
+        />
+      )}
 
       {classifying && (
         <ClassifyModal
@@ -630,7 +650,7 @@ function SplitSuggestions({ lines, allLines, account, data }) {
 
 // Classify / Resolve / Ignore / Un-ignore / Unmatch for one stored line.
 // Shared by the classic table and the review table so both behave the same.
-function LineActions({ ln, isAdmin, onClassify, onIgnoreLine, onUnmatchLine }) {
+function LineActions({ ln, isAdmin, onClassify, onLink, onIgnoreLine, onUnmatchLine }) {
   if (!isAdmin) return null;
   return (
     <>
@@ -639,6 +659,11 @@ function LineActions({ ln, isAdmin, onClassify, onIgnoreLine, onUnmatchLine }) {
           <button className="button secondary small" onClick={() => onClassify(ln)}>
             {ln.status === "review" ? "Resolve" : "Classify"}
           </button>
+          {onLink && (
+            <button className="button secondary small" onClick={() => onLink(ln)}>
+              Link entry
+            </button>
+          )}
           <button className="button ghost small" onClick={() => onIgnoreLine(ln, true)}>
             Ignore
           </button>
@@ -683,7 +708,7 @@ const money2 = (n) => Number(n).toLocaleString("en-IN", { minimumFractionDigits:
 
 // One row per bank line; a group shows all its book entries in that row.
 // Single-tenant: one academy's books, no tenant scoping.
-function ReconGrid({ lines, allLines, account, data, isAdmin, onClassify, onIgnoreLine, onUnmatchLine }) {
+function ReconGrid({ lines, allLines, account, statement, data, isAdmin, onClassify, onLink, onIgnoreLine, onUnmatchLine }) {
   const [filter, setFilter] = useState("all");
   const ledger = useMemo(
     () => ledgerByKeyOf(data),
@@ -697,7 +722,12 @@ function ReconGrid({ lines, allLines, account, data, isAdmin, onClassify, onIgno
   );
   const rows = useMemo(() => buildReconRows(lines, ledger, hints), [lines, ledger, hints]);
   const counts = useMemo(() => reconFilterCounts(rows), [rows]);
-  const shown = rows.filter((r) => reconRowMatchesFilter(r, filter));
+  const bookOnly = useMemo(
+    () => bookOnlyEntries(statement, allLines, data),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [statement, allLines, data.collections, data.expenses, data.transfers]
+  );
+  const shown = filter === "book_only" ? [] : rows.filter((r) => reconRowMatchesFilter(r, filter));
 
   return (
     <>
@@ -712,7 +742,17 @@ function ReconGrid({ lines, allLines, account, data, isAdmin, onClassify, onIgno
             {f.label} <b>{counts[f.key]}</b>
           </button>
         ))}
+        <button
+          type="button"
+          className={filter === "book_only" ? "recon-chip active" : "recon-chip"}
+          onClick={() => setFilter("book_only")}
+        >
+          Book only <b>{bookOnly.length}</b>
+        </button>
       </div>
+      {filter === "book_only" ? (
+        <BookOnlyTable entries={bookOnly} />
+      ) : (
       <div className="table-scroll">
         <table className="recon-grid">
           <thead>
@@ -732,9 +772,49 @@ function ReconGrid({ lines, allLines, account, data, isAdmin, onClassify, onIgno
                 r={r}
                 isAdmin={isAdmin}
                 onClassify={onClassify}
+                onLink={onLink}
                 onIgnoreLine={onIgnoreLine}
                 onUnmatchLine={onUnmatchLine}
               />
+            ))}
+          </tbody>
+        </table>
+      </div>
+      )}
+    </>
+  );
+}
+
+// Read-only: entries in the books for the statement's account and period
+// that no bank line links to.
+function BookOnlyTable({ entries }) {
+  return (
+    <>
+      <div className="info-box recon-bookonly-note">
+        <span>In the books but not in this statement — check amount/date or missing bank entry.</span>
+      </div>
+      <div className="table-scroll">
+        <table className="recon-grid">
+          <thead>
+            <tr>
+              <th>Book ID</th><th>Kind</th><th>Date</th><th>Name / category</th><th>Amount</th><th>Bank reference</th>
+            </tr>
+          </thead>
+          <tbody>
+            {entries.length === 0 && (
+              <tr><td colSpan={6} className="recon-empty">Every book entry in this period is linked to a bank line.</td></tr>
+            )}
+            {entries.map((e) => (
+              <tr key={e.key}>
+                <td className="recon-num">{e.label}</td>
+                <td><span className="mini-tag recon-kind">{BOOK_KIND_TAG[e.kind]}</span></td>
+                <td>{e.date}</td>
+                <td>{e.who || "—"}</td>
+                <td className={e.direction === "CR" ? "amount-positive recon-num" : "amount-negative recon-num"}>
+                  {money2(e.amount)}
+                </td>
+                <td className="desc-cell recon-desc" title={e.bankReference}>{e.bankReference || "—"}</td>
+              </tr>
             ))}
           </tbody>
         </table>
@@ -743,13 +823,13 @@ function ReconGrid({ lines, allLines, account, data, isAdmin, onClassify, onIgno
   );
 }
 
-function ReconRow({ r, isAdmin, onClassify, onIgnoreLine, onUnmatchLine }) {
+function ReconRow({ r, isAdmin, onClassify, onLink, onIgnoreLine, onUnmatchLine }) {
   const linked = r.links.length > 0;
   const sources = new Set(r.links.map((k) => k.source));
   const sug = !linked ? r.suggestion : null;
   const reasonText = r.reason ? REASON_LABEL[r.reason] || r.reason : r.result === "REVIEW" ? "Needs review" : "";
   return (
-    <tr className={r.result === "REVIEW" || r.result === "UNMATCHED" ? "row-open" : ""}>
+    <tr className={r.result === "REVIEW" || r.result === "UNMATCHED" ? "recon-attn" : ""}>
       <td>
         <span className={`rbadge ${r.result.toLowerCase()}`}>{RESULT_LABEL[r.result]}</span>
         {sources.has("auto_name") && <span className="mini-tag ok recon-src">Name-confirmed</span>}
@@ -789,6 +869,7 @@ function ReconRow({ r, isAdmin, onClassify, onIgnoreLine, onUnmatchLine }) {
           ln={r.line}
           isAdmin={isAdmin}
           onClassify={onClassify}
+          onLink={onLink}
           onIgnoreLine={onIgnoreLine}
           onUnmatchLine={onUnmatchLine}
         />

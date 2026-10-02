@@ -17,7 +17,7 @@ import {
   studentFeeTotals,
 } from "./lib/fees.js";
 import { parseBankStatement } from "./lib/bankStatement.js";
-import { attachLinks, linksToLinePatch, matchStatementLines } from "./lib/reconcile.js";
+import { attachLinks, buildManualLinkPayload, linksToLinePatch, matchStatementLines } from "./lib/reconcile.js";
 import { getAccess } from "./lib/access.js";
 import {
   fetchStudents,
@@ -964,6 +964,27 @@ function AppShell() {
     }
   };
 
+  // Link one bank line to the book entries picked in the Link entry popup, in
+  // one atomic save. Errors propagate so the popup can show them.
+  const linkBankLine = async (line, entries) => {
+    setBankBusy(true);
+    try {
+      const payload = buildManualLinkPayload(line.id, entries);
+      await saveMatchLinks(payload.lineId, payload.links, payload.source, { status: payload.status });
+      const bankRefUpdaters = {
+        collection: (id, patch) => updateCollection(id, patch),
+        expense: (id, patch) => updateExpense(id, patch, profile.id),
+        transfer: (id, patch) => updateTransfer(id, patch),
+      };
+      await Promise.all(
+        payload.links.map((k) => bankRefUpdaters[k.bookKind](k.bookId, { bank_reference: bankReferenceText(line) }))
+      );
+      await Promise.all([loadData(), loadBankData()]);
+    } finally {
+      setBankBusy(false);
+    }
+  };
+
   // Turn one unmatched statement line into a real record and mark it matched.
   // `input.kind` is 'collection' | 'expense' | 'transfer'.
   const classifyBankLine = async (line, input) => {
@@ -1648,6 +1669,7 @@ function AppShell() {
             onIgnoreLine={setBankLineIgnored}
             onUnmatchLine={unmatchBankLine}
             onApplyRerun={applyBankRerun}
+            onLinkLine={linkBankLine}
             onDeleteStatement={removeBankStatement}
           />
         )}

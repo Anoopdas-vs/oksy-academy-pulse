@@ -27,6 +27,12 @@ import {
   reviewHints,
   reconFilterCounts,
   reconRowMatchesFilter,
+  linkCandidates,
+  filterLinkCandidates,
+  summarizeSelection,
+  buildManualLinkPayload,
+  bookOnlyEntries,
+  linkedKeys,
   LINK_CONFLICT_MESSAGE,
 } from "./reconcile.js";
 
@@ -873,5 +879,126 @@ describe("buildReconRows — review table rows", () => {
     });
     assert.equal(rows.filter((r) => reconRowMatchesFilter(r, "all")).length, 7);
     assert.deepEqual(rows.filter((r) => reconRowMatchesFilter(r, "group")).map((r) => r.lineId), [2]);
+  });
+});
+
+describe("manual link popup helpers", () => {
+  const data = {
+    collections: [
+      { id: 1, account: "HDFC", date: "2026-03-05", amount: 1800, student_name: "Aboobeker" },
+      { id: 2, account: "HDFC", date: "2026-03-02", amount: 1800, student_name: "Sreeshma" },
+      { id: 3, account: "HDFC", date: "2026-03-05", amount: 800, student_name: "Mayiza", bank_reference: "UPI 712345678901" },
+      { id: 4, account: "ICICI", date: "2026-03-05", amount: 1800, student_name: "Other account" },
+      { id: 5, account: "HDFC", date: "2026-01-01", amount: 1800, student_name: "Far away" },
+    ],
+    expenses: [{ id: 9, account: "HDFC", date: "2026-03-05", amount: 1800, category: "Rent" }],
+    transfers: [
+      { id: 7, from_account: "Cash", to_account: "HDFC", date: "2026-03-05", amount: 500, purpose: "deposit" },
+      { id: 8, from_account: "HDFC", to_account: "Cash", date: "2026-03-05", amount: 600, purpose: "withdraw" },
+    ],
+  };
+  const crLine = { id: 1, txn_date: "2026-03-05", deposit: 1800, withdrawal: 0, description: "UPI/777/x", reference: "", account: "HDFC" };
+  const keys = (list) => list.map((c) => c.key);
+
+  test("candidates exclude already-linked entries, wrong-direction entries and other accounts", () => {
+    const list = linkCandidates(crLine, "HDFC", data, ["collection:2"], { showAllDates: true });
+    const k = keys(list);
+    assert.ok(!k.includes("collection:2")); // linked elsewhere
+    assert.ok(!k.includes("expense:9")); // DR entry for a CR line
+    assert.ok(!k.includes("transfer:8")); // transfer out
+    assert.ok(!k.includes("collection:4")); // other account
+    assert.ok(k.includes("transfer:7")); // transfer in
+    assert.ok(k.includes("collection:1") && k.includes("collection:3"));
+  });
+
+  test("a DR line is offered expenses and transfers out, never collections", () => {
+    const dr = { ...crLine, deposit: 0, withdrawal: 600 };
+    const k = keys(linkCandidates(dr, "HDFC", data, [], { showAllDates: true }));
+    assert.deepEqual(k.sort(), ["expense:9", "transfer:8"]);
+  });
+
+  test("ranking: same-amount nearest date first and tagged suggested; the rest by date proximity", () => {
+    const list = linkCandidates(crLine, "HDFC", data, [], { showAllDates: true });
+    assert.equal(list[0].key, "collection:1"); // same amount, same day
+    assert.equal(list[0].suggested, true);
+    assert.equal(list[0].label, "OKSY/000001");
+    assert.ok(list.findIndex((c) => c.key === "collection:5") > list.findIndex((c) => c.key === "collection:3"));
+  });
+
+  test("a UTR hit is suggested even when the amount differs; the date window hides far entries unless 'show all dates'", () => {
+    const withUtr = { ...crLine, description: "UPI/712345678901/x" };
+    const near = linkCandidates(withUtr, "HDFC", data, []);
+    assert.equal(near.find((c) => c.key === "collection:3").suggested, true);
+    assert.ok(!keys(near).includes("collection:5"));
+    assert.ok(keys(linkCandidates(withUtr, "HDFC", data, [], { showAllDates: true })).includes("collection:5"));
+  });
+
+  test("search matches Book ID, name, amount and date", () => {
+    const list = linkCandidates(crLine, "HDFC", data, [], { showAllDates: true });
+    assert.deepEqual(keys(filterLinkCandidates(list, "mayiza")), ["collection:3"]);
+    assert.ok(keys(filterLinkCandidates(list, "OKSY/000002")).includes("collection:2"));
+    assert.ok(keys(filterLinkCandidates(list, "1,800")).includes("collection:1"));
+    assert.ok(keys(filterLinkCandidates(list, "2026-03-02")).includes("collection:2"));
+  });
+
+  test("selection summary for one entry: exact, no confirmation needed", () => {
+    const sel = [{ date: "2026-03-05", amount: 1800 }];
+    assert.deepEqual(summarizeSelection(crLine, sel), {
+      count: 1, total: 1800, bankAmount: 1800, amountDiff: 0, dateDiff: 0, needsConfirm: false,
+    });
+  });
+
+  test("selection summary for three entries: amount diff is bank minus the sum, date diff is the largest gap", () => {
+    const sel = [
+      { date: "2026-03-05", amount: 1000 },
+      { date: "2026-03-04", amount: 500 },
+      { date: "2026-03-02", amount: 200.5 },
+    ];
+    const sum = summarizeSelection(crLine, sel);
+    assert.equal(sum.count, 3);
+    assert.equal(sum.total, 1700.5);
+    assert.equal(sum.amountDiff, 99.5);
+    assert.equal(sum.dateDiff, 3);
+    assert.equal(sum.needsConfirm, true);
+    assert.equal(summarizeSelection(crLine, []).needsConfirm, false);
+  });
+
+  test("manual link payload is all-or-nothing: every entry as source 'manual'; empty selection throws", () => {
+    const payload = buildManualLinkPayload(55, [
+      { kind: "collection", id: 1 },
+      { kind: "transfer", id: 7 },
+    ]);
+    assert.deepEqual(payload, {
+      lineId: 55,
+      links: [
+        { bookKind: "collection", bookId: 1, source: "manual" },
+        { bookKind: "transfer", bookId: 7, source: "manual" },
+      ],
+      source: "manual",
+      status: "matched",
+    });
+    assert.throws(() => buildManualLinkPayload(55, []));
+  });
+
+  test("book-only: only unlinked entries of the statement's account inside the period", () => {
+    const statement = { account: "HDFC", period_start: "2026-03-01", period_end: "2026-03-31" };
+    const lines = [
+      { id: 1, account: "HDFC", status: "matched", links: [{ bookKind: "collection", bookId: 1, source: "auto_exact" }] },
+      { id: 2, account: "HDFC", status: "matched", match_kind: "collection", match_id: 2, links: [] }, // legacy fallback still counts
+    ];
+    const out = bookOnlyEntries(statement, lines, data);
+    const k = keys(out);
+    assert.ok(!k.includes("collection:1") && !k.includes("collection:2")); // linked
+    assert.ok(!k.includes("collection:4")); // other account
+    assert.ok(!k.includes("collection:5")); // outside the period
+    assert.deepEqual(k.sort(), ["collection:3", "expense:9", "transfer:7", "transfer:8"]);
+    assert.equal(out.find((e) => e.key === "expense:9").direction, "DR");
+  });
+
+  test("linkedKeys reads every link of a line", () => {
+    const lines = [
+      { account: "HDFC", status: "matched", links: [{ bookKind: "collection", bookId: 1 }, { bookKind: "collection", bookId: 3 }] },
+    ];
+    assert.deepEqual(linkedKeys(lines, "HDFC").sort(), ["collection:1", "collection:3"]);
   });
 });

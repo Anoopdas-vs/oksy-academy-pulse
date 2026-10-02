@@ -22,6 +22,7 @@ export function accountLedger(account, { collections = [], expenses = [], transf
         delta: amt(c.amount),
         label: c.student_name || "",
         refText: [c.reference, c.bank_reference].filter(Boolean).join(" "),
+        bankReference: c.bank_reference || "",
       });
     }
   });
@@ -34,6 +35,7 @@ export function accountLedger(account, { collections = [], expenses = [], transf
         delta: -amt(e.amount),
         label: [e.category, e.description].filter(Boolean).join(" "),
         refText: [e.reference, e.bank_reference].filter(Boolean).join(" "),
+        bankReference: e.bank_reference || "",
       });
     }
   });
@@ -46,6 +48,7 @@ export function accountLedger(account, { collections = [], expenses = [], transf
         delta: amt(t.amount),
         label: [t.purpose, t.reference].filter(Boolean).join(" "),
         refText: [t.reference, t.bank_reference].filter(Boolean).join(" "),
+        bankReference: t.bank_reference || "",
       });
     }
     if (t.from_account === account) {
@@ -56,6 +59,7 @@ export function accountLedger(account, { collections = [], expenses = [], transf
         delta: -amt(t.amount),
         label: [t.purpose, t.reference].filter(Boolean).join(" "),
         refText: [t.reference, t.bank_reference].filter(Boolean).join(" "),
+        bankReference: t.bank_reference || "",
       });
     }
   });
@@ -941,3 +945,129 @@ export function reconFilterCounts(rows) {
   });
   return counts;
 }
+
+// ---------------------------------------------------------------------------
+// Manual link popup + "Book only" list (pure helpers). Single-tenant.
+// ---------------------------------------------------------------------------
+
+const DEFAULT_LINK_WINDOW_DAYS = 7;
+const SUGGEST_WINDOW_DAYS = 3;
+
+const bookItemOf = (e, labels) => ({
+  key: entryKey(e),
+  kind: e.kind,
+  id: e.id,
+  label: labels.get(entryKey(e))?.label ?? `${BOOK_KIND_TAG[e.kind]} #${e.id}`,
+  who: e.label || "",
+  date: isoDay(e.date),
+  amount: centsOf(e) / 100,
+  direction: e.delta > 0 ? "CR" : "DR",
+  bankReference: e.bankReference || "",
+});
+
+// Book entries a bank line could be linked to by hand: same account, the
+// line's direction (CR: collections + transfers in; DR: expenses + transfers
+// out), and NOT already linked to any bank line (`usedKeys`, "kind:id").
+// Best first: UTR hits and same-amount entries within 3 days (rankCandidates
+// order) carry `suggested: true`; the rest follow by closeness in date, then
+// in amount. Without `showAllDates`, non-suggested entries further than
+// `windowDays` from the bank date are left out.
+export function linkCandidates(line, account, data, usedKeys = [], { showAllDates = false, windowDays = DEFAULT_LINK_WINDOW_DAYS } = {}) {
+  const ledger = accountLedger(account, data);
+  const labels = ledgerByKeyOf(data);
+  const used = new Set(usedKeys);
+  const { wantDeposit, dateStr } = lineFacts(line);
+  const bankCents = lineCents(line);
+  const utrs = extractUtrs(line.description, line.reference);
+
+  const ranked = rankCandidates(line, ledger, { used, dayWindow: SUGGEST_WINDOW_DAYS })
+    .filter(({ e }) => centsOf(e) === bankCents)
+    .map(({ e }) => entryKey(e));
+  const rank = new Map(ranked.map((k, i) => [k, i]));
+
+  return ledger
+    .filter((e) => !used.has(entryKey(e)) && e.delta > 0 === wantDeposit)
+    .map((e) => {
+      const utr = utrs.length > 0 && extractUtrs(e.refText).some((u) => utrs.includes(u));
+      return {
+        ...bookItemOf(e, labels),
+        dateDiff: daysBetweenISO(isoDay(e.date), dateStr),
+        utr,
+        suggested: utr || rank.has(entryKey(e)),
+        _rank: rank.has(entryKey(e)) ? rank.get(entryKey(e)) : Infinity,
+      };
+    })
+    .filter((c) => showAllDates || c.suggested || Math.abs(c.dateDiff) <= windowDays)
+    .sort(
+      (a, b) =>
+        Number(b.suggested) - Number(a.suggested) ||
+        Number(b.utr) - Number(a.utr) ||
+        a._rank - b._rank ||
+        Math.abs(a.dateDiff) - Math.abs(b.dateDiff) ||
+        Math.abs(a.amount * 100 - bankCents) - Math.abs(b.amount * 100 - bankCents) ||
+        Number(a.id) - Number(b.id)
+    )
+    .map(({ _rank, ...c }) => c);
+}
+
+// Search box for the link popup: Book ID, name / category, bank reference,
+// date or amount ("2000" and "2,000.00" both work).
+export function filterLinkCandidates(candidates, query) {
+  const q = String(query || "").trim().toLowerCase();
+  if (!q) return candidates;
+  const bare = q.replace(/,/g, "");
+  return candidates.filter((c) => {
+    const hay = [c.label, c.who, c.bankReference, c.date, String(c.amount), moneyText(c.amount)].join(" ").toLowerCase();
+    return hay.includes(q) || hay.replace(/,/g, "").includes(bare);
+  });
+}
+
+// Live footer of the link popup. dateDiff = bank date minus book date (days),
+// the signed value of the largest gap; amountDiff = bank minus selected total.
+export function summarizeSelection(line, entries) {
+  const bankCents = lineCents(line);
+  const totalCents = entries.reduce((sum, e) => sum + Math.round(Math.abs(amt(e.amount)) * 100), 0);
+  const lineDay = isoDay(line.txn_date ?? line.date);
+  const dateDiff = entries
+    .map((e) => daysBetweenISO(isoDay(e.date), lineDay))
+    .reduce((worst, d) => (Math.abs(d) > Math.abs(worst) ? d : worst), 0);
+  const amountDiff = (bankCents - totalCents) / 100;
+  return {
+    count: entries.length,
+    total: totalCents / 100,
+    bankAmount: bankCents / 100,
+    amountDiff,
+    dateDiff,
+    needsConfirm: entries.length > 0 && (amountDiff !== 0 || dateDiff !== 0),
+  };
+}
+
+// Payload for one all-or-nothing save (save_bank_match_links RPC).
+export function buildManualLinkPayload(lineId, entries) {
+  if (!entries.length) throw new Error("Select at least one entry to link.");
+  return {
+    lineId,
+    links: entries.map((e) => ({ bookKind: e.kind, bookId: e.id, source: "manual" })),
+    source: "manual",
+    status: "matched",
+  };
+}
+
+// Entries of the statement's account dated inside its period that no bank
+// line of that account links to: in the books, not in the statement.
+export function bookOnlyEntries(statement, allLines, data) {
+  const used = new Set(usedKeysOf(allLines, statement.account));
+  const labels = ledgerByKeyOf(data);
+  const from = statement.period_start ? isoDay(statement.period_start) : null;
+  const to = statement.period_end ? isoDay(statement.period_end) : null;
+  return accountLedger(statement.account, data)
+    .filter((e) => {
+      const d = isoDay(e.date);
+      return !used.has(entryKey(e)) && (!from || d >= from) && (!to || d <= to);
+    })
+    .map((e) => bookItemOf(e, labels))
+    .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0) || a.kind.localeCompare(b.kind) || Number(a.id) - Number(b.id));
+}
+
+// Entries ("kind:id") already linked to any stored bank line of `account`.
+export const linkedKeys = (allLines, account) => usedKeysOf(allLines, account);

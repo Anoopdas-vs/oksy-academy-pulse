@@ -3059,3 +3059,66 @@ tfoot td {
   background: var(--track);
   color: var(--muted);
 }
+
+/* New-view rows that need attention use a neutral tint, not the red row-open. */
+.recon-grid tr.recon-attn td {
+  background: var(--purple-pale);
+}
+
+.recon-bookonly-note {
+  margin: 0 18px 10px;
+}
+
+/* Link entry popup */
+.link-toolbar {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  margin: 10px 0;
+}
+
+.link-toolbar input[type="search"] {
+  flex: 1;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.link-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.link-list {
+  max-height: 280px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.link-picked td {
+  background: var(--purple-pale);
+}
+
+.link-footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin: 10px 0;
+  font-size: 12px;
+}
+
+.link-warning {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: #fef9c3;
+  color: #854d0e;
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 12px;
+  margin-bottom: 8px;
+}

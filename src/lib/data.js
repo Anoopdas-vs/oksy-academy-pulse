@@ -1,5 +1,5 @@
 import { supabase } from "./supabaseClient.js";
-import { isLinkConflict, LINK_CONFLICT_MESSAGE, linksToLinePatch } from "./reconcile.js";
+import { isLinkConflict, LINK_CONFLICT_MESSAGE } from "./reconcile.js";
 
 // -------- Students --------
 
@@ -436,48 +436,26 @@ export async function fetchStatementLineIds(statementId) {
   return data || [];
 }
 
-// Replace the links of one line with `links` ([{ bookKind, bookId, source? }]),
-// then mirror the first into the line. `status` is 'matched' for matches and
-// 'classified' for lines that created their own record.
-export async function saveMatchLinks(lineId, links, source = "manual", { status = "matched", userId = null } = {}) {
-  const { data: existing, error: readErr } = await supabase
-    .from("bank_match_links")
-    .select("id, book_kind, book_id")
-    .eq("line_id", lineId);
-  if (readErr) throw readErr;
-
-  const wanted = new Map(links.map((k) => [`${k.bookKind}:${k.bookId}`, k]));
-  const have = new Map((existing || []).map((r) => [`${r.book_kind}:${r.book_id}`, r]));
-  const staleIds = [...have].filter(([key]) => !wanted.has(key)).map(([, r]) => r.id);
-  if (staleIds.length) {
-    const { error } = await supabase.from("bank_match_links").delete().in("id", staleIds);
-    if (error) throw error;
-  }
-  const fresh = [...wanted].filter(([key]) => !have.has(key)).map(([, k]) => ({
-    line_id: lineId,
-    book_kind: k.bookKind,
-    book_id: k.bookId,
-    source: k.source || source,
-  }));
-  if (fresh.length) {
-    const { error } = await supabase.from("bank_match_links").insert(fresh);
-    if (error) throw isLinkConflict(error) ? new Error(LINK_CONFLICT_MESSAGE) : error;
-  }
-  await updateBankStatementLine(lineId, linksToLinePatch(links, { status, userId }));
+// Replace the links of one line with `links` ([{ bookKind, bookId, source? }])
+// in ONE database transaction (RPC, migration 34), which also mirrors the
+// first link into the line and stamps matched_at / matched_by (auth.uid()).
+// `status` is 'matched' for matches and 'classified' for lines that created
+// their own record. `userId` is accepted for older callers and ignored.
+export async function saveMatchLinks(lineId, links, source = "manual", { status = "matched" } = {}) {
+  const { error } = await supabase.rpc("save_bank_match_links", {
+    p_line_id: lineId,
+    p_links: links.map((k) => ({ book_kind: k.bookKind, book_id: k.bookId, source: k.source || source })),
+    p_source: source,
+    p_status: status,
+  });
+  if (error) throw isLinkConflict(error) ? new Error(LINK_CONFLICT_MESSAGE) : error;
 }
 
-// Remove every link of a line and clear the mirrored columns. `status` is the
-// line's new status ('unmatched' for Unmatch, 'ignored' for Ignore).
+// Remove every link of a line and clear the mirrored columns (RPC). `status`
+// is the line's new status ('unmatched' for Unmatch, 'ignored' for Ignore).
 export async function removeMatchLinks(lineId, { status = "unmatched" } = {}) {
-  const { error } = await supabase.from("bank_match_links").delete().eq("line_id", lineId);
+  const { error } = await supabase.rpc("remove_bank_match_links", { p_line_id: lineId, p_status: status });
   if (error) throw error;
-  await updateBankStatementLine(lineId, {
-    status,
-    match_kind: null,
-    match_id: null,
-    matched_at: null,
-    matched_by: null,
-  });
 }
 
 export async function deleteBankStatement(id) {
