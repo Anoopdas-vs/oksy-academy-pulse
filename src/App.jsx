@@ -1194,10 +1194,9 @@ function AppShell() {
           const problems = validateMoneyRow({ date, amount, account });
 
           // An Expense ID means "overwrite that existing expense" instead of
-          // adding a new one. Only admins may do this (matches the manual Edit
-          // permission — expenses RLS actually allows any approved user to
-          // UPDATE, but the upload path deliberately holds it to the same bar
-          // as the Edit button rather than opening a wider hole); the Expense
+          // adding a new one. Only admins may do this: since migration 16 the
+          // expenses UPDATE policy is admin-only (INSERT is staff+), the same
+          // bar as the Edit button, so the UI check mirrors RLS; the Expense
           // ID must resolve to a real expense whose Category matches this
           // row's, or the row is rejected rather than overwriting the wrong
           // record.
