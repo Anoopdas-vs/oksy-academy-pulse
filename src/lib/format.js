@@ -1,3 +1,5 @@
+import { istToday } from "./batchStatus.js";
+
 export const formatMoney = (value) =>
   new Intl.NumberFormat("en-IN", {
     style: "currency",
@@ -5,7 +7,9 @@ export const formatMoney = (value) =>
     maximumFractionDigits: 0,
   }).format(value || 0);
 
-export const today = () => new Date().toISOString().slice(0, 10);
+// Today's date in India (Asia/Kolkata) as YYYY-MM-DD. Not toISOString(): that is
+// the UTC date, which is still "yesterday" in IST between 00:00 and 05:30.
+export const today = (now = new Date()) => istToday(now);
 
 // Fee collection receipt number <-> collections.id, and expense code <->
 // expenses.id. Shared by the page tables (display), reports.js (export

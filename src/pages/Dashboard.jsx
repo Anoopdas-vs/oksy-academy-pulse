@@ -1,4 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
+import { addDaysISO, daysBetweenISO, monthKeyOfISO, monthShortOfKey } from "../lib/dates.js";
+import { istToday } from "../lib/batchStatus.js";
 import {
   BarChart,
   Bar,
@@ -41,12 +43,11 @@ function prevWindow(range) {
     const m = new Date(now.getFullYear(), now.getMonth() - 1, 1);
     return { start: `${monthKey(m)}-01`, end: `${monthKey(m)}-31` };
   }
-  const s = new Date(range.start);
-  const e = new Date(range.end);
-  const len = e - s;
-  const pe = new Date(s.getTime() - 86400000);
-  const ps = new Date(pe.getTime() - len);
-  return { start: ps.toISOString().slice(0, 10), end: pe.toISOString().slice(0, 10) };
+  // Calendar-day arithmetic on the ISO strings — no Date/UTC conversion.
+  const len = daysBetweenISO(range.start, range.end);
+  const pe = addDaysISO(range.start, -1);
+  const ps = addDaysISO(pe, -len);
+  return { start: ps, end: pe };
 }
 
 const mv = (n) => (n > 0 ? { text: `+${n} this month`, dir: "up" } : { text: "no change", dir: "flat" });
@@ -582,10 +583,9 @@ function buildMonthlySeries(collections, expenses) {
   const buckets = new Map();
   const add = (dateStr, field, amount) => {
     if (!dateStr) return;
-    const d = new Date(dateStr);
-    if (Number.isNaN(d.getTime())) return;
-    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-    const label = d.toLocaleDateString("en-IN", { month: "short" });
+    const key = monthKeyOfISO(dateStr);
+    if (!key) return;
+    const label = monthShortOfKey(key);
     if (!buckets.has(key)) buckets.set(key, { key, month: label, revenue: 0, expense: 0 });
     buckets.get(key)[field] += Number(amount || 0);
   };
@@ -593,7 +593,7 @@ function buildMonthlySeries(collections, expenses) {
   expenses.forEach((e) => add(e.date, "expense", e.amount));
 
   const rows = Array.from(buckets.values()).sort((a, b) => a.key.localeCompare(b.key)).slice(-9);
-  const nowKey = `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, "0")}`;
+  const nowKey = istToday().slice(0, 7);
   return rows.map((r) => ({
     ...r,
     month: r.key === nowKey ? `${r.month} (MTD)` : r.month,
