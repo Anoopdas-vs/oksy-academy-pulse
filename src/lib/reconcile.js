@@ -182,7 +182,7 @@ const round2 = (n) => Math.round(n * 100) / 100;
 
 // Direction, whole-rupee amount and calendar day of a statement line.
 // Accepts either an upload-time line ({ date }) or a stored one ({ txn_date }).
-function describeLine(ln) {
+function lineFacts(ln) {
   const wantDeposit = amt(ln.deposit) > 0;
   return {
     wantDeposit,
@@ -202,7 +202,7 @@ export function extractUtrs(...texts) {
 // best-first. The single place this filter lives -- autoMatch and the
 // review-candidates tooltip both call it so they can never disagree.
 export function rankCandidates(ln, ledger, { used = new Set(), dayWindow = 4 } = {}) {
-  const { wantDeposit, target, dateStr } = describeLine(ln);
+  const { wantDeposit, target, dateStr } = lineFacts(ln);
   return ledger
     .filter((e) => !used.has(entryKey(e)) && e.delta > 0 === wantDeposit && Math.round(Math.abs(e.delta)) === target)
     .map((e) => ({ e, dd: Math.abs(daysBetweenISO(dateStr, isoDay(e.date))) }))
@@ -313,7 +313,7 @@ export function autoMatch(lines, account, data, dayWindow = 4, { usedKeys = [] }
   {
     const groups = new Map();
     openIdx().forEach((i) => {
-      const { wantDeposit, target, dateStr } = describeLine(lines[i]);
+      const { wantDeposit, target, dateStr } = lineFacts(lines[i]);
       const k = `${wantDeposit}|${target}|${dateStr}`;
       if (!groups.has(k)) groups.set(k, { wantDeposit, target, dateStr, idxs: [] });
       groups.get(k).idxs.push(i);
@@ -401,12 +401,18 @@ export const isOrderAssumed = (line) =>
   line?.status === "matched" && Number(line.match_score) === ORDER_ASSUMED_SCORE;
 
 const OPEN_STATUSES = new Set(["review", "unmatched"]);
+// Entries already held by stored lines. A line's `links` (see attachLinks)
+// win; lines without them fall back to the legacy match_kind/match_id pair.
 const usedKeysOf = (lines, account) =>
   lines
-    .filter(
-      (l) => l.account === account && (l.status === "matched" || l.status === "classified") && l.match_kind && l.match_id != null
-    )
-    .map((l) => `${l.match_kind}:${l.match_id}`);
+    .filter((l) => l.account === account && (l.status === "matched" || l.status === "classified"))
+    .flatMap((l) =>
+      l.links?.length
+        ? l.links.map((k) => `${k.bookKind}:${k.bookId}`)
+        : l.match_kind && l.match_id != null
+          ? [`${l.match_kind}:${l.match_id}`]
+          : []
+    );
 const asAutoLine = (l) => ({
   date: l.txn_date,
   description: l.description,
@@ -446,6 +452,24 @@ export function planRerun(statementLines, allLines, account, data, dayWindow = 4
   return changes;
 }
 
+// Up to 5 subsets (2..maxSize entries) of `entries` whose values sum to
+// `total`. `valueOf` defaults to whole rupees; the link matcher passes paise.
+function subsetsSumming(entries, total, maxSize, valueOf = (e) => Math.round(Math.abs(e.delta))) {
+  const out = [];
+  const walk = (start, picked, sum) => {
+    if (out.length >= 5) return;
+    if (sum === total && picked.length >= 2) out.push(picked.slice());
+    if (picked.length === maxSize || sum >= total) return;
+    for (let i = start; i < entries.length; i += 1) {
+      picked.push(entries[i]);
+      walk(i + 1, picked, sum + valueOf(entries[i]));
+      picked.pop();
+    }
+  };
+  walk(0, [], 0);
+  return out;
+}
+
 // Suggest -- never apply -- groupings where no single record explains a
 // line: one line equal to the sum of 2-3 records, or several same-day lines
 // whose total equals the sum of up to 4 records. A line can only hold one
@@ -458,25 +482,9 @@ export function suggestSplitGroups(statementLines, allLines, account, data, dayW
     (l) => OPEN_STATUSES.has(l.status) && !rankCandidates(asAutoLine(l), ledger, { used, dayWindow }).length
   );
 
-  const subsetsSumming = (entries, total, maxSize) => {
-    const out = [];
-    const walk = (start, picked, sum) => {
-      if (out.length >= 5) return;
-      if (sum === total && picked.length >= 2) out.push(picked.slice());
-      if (picked.length === maxSize || sum >= total) return;
-      for (let i = start; i < entries.length; i += 1) {
-        picked.push(entries[i]);
-        walk(i + 1, picked, sum + Math.round(Math.abs(entries[i].delta)));
-        picked.pop();
-      }
-    };
-    walk(0, [], 0);
-    return out;
-  };
-
   const suggestFor = (group, maxSize) => {
-    const { wantDeposit, dateStr } = describeLine(asAutoLine(group[0]));
-    const total = group.reduce((s, l) => s + describeLine(asAutoLine(l)).target, 0);
+    const { wantDeposit, dateStr } = lineFacts(asAutoLine(group[0]));
+    const total = group.reduce((s, l) => s + lineFacts(asAutoLine(l)).target, 0);
     const free = ledger.filter((e) => !used.has(entryKey(e)) && e.delta > 0 === wantDeposit);
     const sameDay = free.filter((e) => isoDay(e.date) === dateStr);
     let options = subsetsSumming(sameDay, total, maxSize);
@@ -494,7 +502,7 @@ export function suggestSplitGroups(statementLines, allLines, account, data, dayW
   });
   const byDay = new Map();
   open.forEach((l) => {
-    const { wantDeposit, dateStr } = describeLine(asAutoLine(l));
+    const { wantDeposit, dateStr } = lineFacts(asAutoLine(l));
     const k = `${wantDeposit}|${dateStr}`;
     byDay.set(k, [...(byDay.get(k) || []), l]);
   });
@@ -651,3 +659,257 @@ export function bankReferenceMismatches(collections = [], threshold = 0.45) {
     .filter((r) => r.score < threshold)
     .sort((a, b) => a.score - b.score);
 }
+
+// ---------------------------------------------------------------------------
+// Link-based matching (bank_match_links, migration 32).
+// Rules: ONE bank line may link to MANY book entries; a book entry links to
+// only ONE bank line. Many lines -> one entry is never auto-linked: it is
+// reported as "split_needed" and the user splits the book entry. Direction is
+// never crossed (CR <-> collections / transfers in, DR <-> expenses /
+// transfers out). Nothing is guessed: ambiguity stays in review with the
+// candidates attached. Single-tenant: one academy, no tenant scoping.
+// ---------------------------------------------------------------------------
+
+const NEAR_DATE_DAYS = 3;
+const MAX_GROUP_ENTRIES = 4;
+const cents = (v) => Math.round(Math.abs(amt(v)) * 100);
+const lineCents = (ln) => cents(amt(ln.deposit) > 0 ? ln.deposit : ln.withdrawal);
+const moneyText = (n) =>
+  Number(n).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const centsOf = (e) => Math.round(Math.abs(e.delta) * 100);
+
+const candidateOf = (line, e) => ({
+  bookKind: e.kind,
+  bookId: e.id,
+  date: isoDay(e.date),
+  amount: centsOf(e) / 100,
+  dateDiff: daysBetweenISO(isoDay(e.date), lineFacts(line).dateStr),
+});
+
+// Match every statement line against the unlinked ledger entries of `account`.
+// Returns an array parallel to `lines`:
+//   { lineId, index, links: [{ bookKind, bookId, source }],
+//     status: 'matched' | 'review' | 'unmatched', reason, candidates }
+// reasons: utr_amount_mismatch, utr_ambiguous, ambiguous, split_needed,
+//          near_date_suggestion (candidates[0].suggested), null.
+// Passes (each only on what is still open, an entry used at most once):
+//   a) auto_utr    12-digit UTR in the description equals the entry's reference
+//                  AND the amount is equal; unequal amount -> review
+//   b) auto_exact  same date + amount, exactly one candidate on both sides
+//   c) auto_group  amount == sum of 2..4 same-day entries, one such combination
+//   d) near date   same amount within +/-3 days, one candidate -> suggestion
+// `usedKeys` ("kind:id") seeds entries that are already linked elsewhere.
+export function matchStatementLines(lines, account, data, { usedKeys = [] } = {}) {
+  const ledger = accountLedger(account, data);
+  const used = new Set(usedKeys);
+  const held = new Set(); // reserved by a UTR review; nobody else may take them
+  const out = lines.map((ln, i) => ({
+    lineId: ln.id ?? ln.seq ?? i,
+    index: i,
+    links: [],
+    status: "unmatched",
+    reason: null,
+    candidates: [],
+  }));
+  const free = (e) => !used.has(entryKey(e)) && !held.has(entryKey(e));
+  const open = () => out.map((_, i) => i).filter((i) => out[i].status === "unmatched");
+  const facts = lines.map((ln) => ({ ...lineFacts(ln), cents: lineCents(ln) }));
+  const link = (i, entries, source) => {
+    entries.forEach((e) => used.add(entryKey(e)));
+    out[i].links = entries.map((e) => ({ bookKind: e.kind, bookId: e.id, source }));
+    out[i].status = "matched";
+  };
+  const review = (i, reason, entries) => {
+    out[i].status = "review";
+    out[i].reason = reason;
+    out[i].candidates = entries.map((e) => candidateOf(lines[i], e));
+  };
+  // Hand an entry to a line only if no other open line also claims it.
+  const claimCounts = (pools) => {
+    const counts = new Map();
+    pools.forEach((pool) => pool.forEach((e) => counts.set(entryKey(e), (counts.get(entryKey(e)) || 0) + 1)));
+    return counts;
+  };
+
+  // a) UTR
+  {
+    const hits = new Map();
+    open().forEach((i) => {
+      const utrs = extractUtrs(lines[i].description, lines[i].reference);
+      if (!utrs.length || !facts[i].cents) return;
+      hits.set(
+        i,
+        ledger.filter(
+          (e) => free(e) && e.delta > 0 === facts[i].wantDeposit && extractUtrs(e.refText).some((u) => utrs.includes(u))
+        )
+      );
+    });
+    const counts = claimCounts([...hits.values()]);
+    hits.forEach((pool, i) => {
+      if (!pool.length) return;
+      if (pool.length > 1 || counts.get(entryKey(pool[0])) > 1) {
+        review(i, "utr_ambiguous", pool);
+      } else if (centsOf(pool[0]) !== facts[i].cents) {
+        review(i, "utr_amount_mismatch", pool);
+      } else {
+        link(i, [pool[0]], "auto_utr");
+        return;
+      }
+      pool.forEach((e) => held.add(entryKey(e)));
+    });
+  }
+
+  // Same-day same-amount candidates of an open line (exact cents).
+  const exactPool = (i) =>
+    ledger.filter(
+      (e) =>
+        free(e) &&
+        e.delta > 0 === facts[i].wantDeposit &&
+        centsOf(e) === facts[i].cents &&
+        isoDay(e.date) === facts[i].dateStr
+    );
+
+  // b) exact date + amount, one-to-one
+  {
+    const idxs = open().filter((i) => facts[i].cents);
+    const pools = new Map(idxs.map((i) => [i, exactPool(i)]));
+    const counts = claimCounts([...pools.values()]);
+    pools.forEach((pool, i) => {
+      if (pool.length === 1 && counts.get(entryKey(pool[0])) === 1) link(i, [pool[0]], "auto_exact");
+    });
+  }
+
+  // c) group: one line == sum of 2..4 same-day entries, unique combination
+  {
+    const combos = new Map();
+    open().forEach((i) => {
+      if (!facts[i].cents || exactPool(i).length) return; // a single entry already fits: ambiguity, not a group
+      const day = ledger.filter(
+        (e) => free(e) && e.delta > 0 === facts[i].wantDeposit && isoDay(e.date) === facts[i].dateStr
+      );
+      const options = subsetsSumming(day, facts[i].cents, MAX_GROUP_ENTRIES, centsOf);
+      if (options.length === 1) combos.set(i, options[0]);
+    });
+    const counts = claimCounts([...combos.values()]);
+    combos.forEach((entries, i) => {
+      if (entries.every((e) => counts.get(entryKey(e)) === 1)) link(i, entries, "auto_group");
+    });
+  }
+
+  // split needed: several same-day lines whose total equals some entries'
+  // total, but not as a plain one-to-one pairing -> the user splits an entry.
+  {
+    const byDay = new Map();
+    open().forEach((i) => {
+      if (!facts[i].cents) return;
+      const k = `${facts[i].wantDeposit}|${facts[i].dateStr}`;
+      byDay.set(k, [...(byDay.get(k) || []), i]);
+    });
+    byDay.forEach((idxs) => {
+      if (idxs.length < 2) return;
+      const { wantDeposit, dateStr } = facts[idxs[0]];
+      const total = idxs.reduce((sum, i) => sum + facts[i].cents, 0);
+      const day = ledger.filter((e) => free(e) && e.delta > 0 === wantDeposit && isoDay(e.date) === dateStr);
+      const lineAmounts = idxs.map((i) => facts[i].cents).sort((a, b) => a - b).join();
+      const options = subsetsSumming(day, total, MAX_GROUP_ENTRIES, centsOf)
+        .concat(day.length === 1 && centsOf(day[0]) === total ? [day] : [])
+        // identical amounts on both sides is plain ambiguity, not a split
+        .filter((o) => o.map(centsOf).sort((a, b) => a - b).join() !== lineAmounts);
+      if (!options.length) return;
+      idxs.forEach((i) => review(i, "split_needed", options[0]));
+    });
+  }
+
+  // d) near date suggestion / ambiguity -- never auto-linked
+  {
+    const pools = new Map();
+    open().forEach((i) => {
+      if (!facts[i].cents) return;
+      const pool = rankCandidates(lines[i], ledger, { used: new Set([...used, ...held]), dayWindow: NEAR_DATE_DAYS })
+        .filter(({ e }) => centsOf(e) === facts[i].cents)
+        .map(({ e }) => e);
+      if (pool.length) pools.set(i, pool);
+    });
+    const counts = claimCounts([...pools.values()]);
+    pools.forEach((pool, i) => {
+      review(i, "ambiguous", pool);
+      if (pool.length === 1 && counts.get(entryKey(pool[0])) === 1) {
+        out[i].reason = "near_date_suggestion";
+        out[i].candidates[0].suggested = true;
+      }
+    });
+  }
+
+  return out;
+}
+
+// Explain a line's links. `linkedBooks` = [{ date, amount }] for each linked
+// entry. dateDiff = bank date minus book date in days (signed value of the
+// largest absolute gap); amountDiff = bank amount minus the SUM of the books.
+//   result: MATCH | GROUP | DATE_DIFF | AMOUNT_DIFF | REVIEW | UNMATCHED
+// Priority: no links -> UNMATCHED/REVIEW; amount gap -> AMOUNT_DIFF;
+// 2+ links -> GROUP; date gap -> DATE_DIFF; otherwise MATCH.
+export function describeLine(line, linkedBooks = []) {
+  if (!linkedBooks.length) {
+    return {
+      dateDiff: 0,
+      amountDiff: 0,
+      bookAmounts: [],
+      result: line?.status === "review" ? "REVIEW" : "UNMATCHED",
+    };
+  }
+  const lineDay = isoDay(line.txn_date ?? line.date);
+  const dateDiff = linkedBooks
+    .map((b) => daysBetweenISO(isoDay(b.date), lineDay))
+    .reduce((worst, d) => (Math.abs(d) > Math.abs(worst) ? d : worst), 0);
+  const bookTotal = linkedBooks.reduce((sum, b) => sum + Math.round(Math.abs(amt(b.amount)) * 100), 0);
+  const amountDiff = (lineCents(line) - bookTotal) / 100;
+  let result = "MATCH";
+  if (amountDiff !== 0) result = "AMOUNT_DIFF";
+  else if (linkedBooks.length >= 2) result = "GROUP";
+  else if (dateDiff !== 0) result = "DATE_DIFF";
+  return {
+    dateDiff,
+    amountDiff,
+    bookAmounts: linkedBooks.map((b) => moneyText(Math.abs(amt(b.amount)))),
+    result,
+  };
+}
+
+// Read side of the rollout: a line's links come from bank_match_links rows
+// (`rows`: { line_id, book_kind, book_id, source }); a line with no row falls
+// back to its legacy match_kind/match_id.
+export function attachLinks(lines, rows = []) {
+  const byLine = new Map();
+  rows.forEach((r) => {
+    byLine.set(r.line_id, [...(byLine.get(r.line_id) || []), { bookKind: r.book_kind, bookId: r.book_id, source: r.source }]);
+  });
+  return lines.map((l) => {
+    const links = byLine.get(l.id);
+    if (links) return { ...l, links };
+    const legacy =
+      l.match_kind && l.match_id != null && (l.status === "matched" || l.status === "classified")
+        ? [{ bookKind: l.match_kind, bookId: l.match_id, source: "legacy" }]
+        : [];
+    return { ...l, links: legacy };
+  });
+}
+
+// Dual-write patch for bank_statement_lines while the old columns are still
+// read by the live page: the FIRST link mirrors into match_kind / match_id.
+export function linksToLinePatch(links, { status = "matched", userId = null, now = new Date().toISOString() } = {}) {
+  const first = links[0];
+  return {
+    status,
+    match_kind: first ? first.bookKind : null,
+    match_id: first ? first.bookId : null,
+    matched_at: first ? now : null,
+    ...(userId && first ? { matched_by: userId } : {}),
+  };
+}
+
+// Postgres unique violation on bank_match_links(book_kind, book_id).
+export function isLinkConflict(err) {
+  return err?.code === "23505" || /duplicate key value/i.test(err?.message || "");
+}
+export const LINK_CONFLICT_MESSAGE = "This entry is already linked to another bank line.";

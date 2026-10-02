@@ -1,4 +1,5 @@
 import { supabase } from "./supabaseClient.js";
+import { isLinkConflict, LINK_CONFLICT_MESSAGE, linksToLinePatch } from "./reconcile.js";
 
 // -------- Students --------
 
@@ -406,6 +407,77 @@ export async function updateBankStatementLineIfOpen(id, patch) {
     .select("id");
   if (error) throw error;
   return (data || []).length > 0;
+}
+
+// -------- Bank match links (bank_match_links, migration 32) --------
+// One bank line -> many book entries; a book entry -> only one bank line.
+// During rollout every write is mirrored into bank_statement_lines
+// (status + match_kind/match_id = first link) so the older page logic keeps
+// working. Reads prefer the link rows (see attachLinks in reconcile.js).
+
+// Links for one statement, or for every statement when `statementId` is null.
+export async function fetchMatchLinks(statementId = null) {
+  let query = supabase
+    .from("bank_match_links")
+    .select("id, line_id, book_kind, book_id, source, bank_statement_lines!inner(statement_id)");
+  if (statementId != null) query = query.eq("bank_statement_lines.statement_id", statementId);
+  const { data, error } = await query;
+  if (error) throw error;
+  return (data || []).map(({ bank_statement_lines: _join, ...row }) => row);
+}
+
+// id + seq of a statement's stored lines, to pair upload results with ids.
+export async function fetchStatementLineIds(statementId) {
+  const { data, error } = await supabase
+    .from("bank_statement_lines")
+    .select("id, seq")
+    .eq("statement_id", statementId);
+  if (error) throw error;
+  return data || [];
+}
+
+// Replace the links of one line with `links` ([{ bookKind, bookId, source? }]),
+// then mirror the first into the line. `status` is 'matched' for matches and
+// 'classified' for lines that created their own record.
+export async function saveMatchLinks(lineId, links, source = "manual", { status = "matched", userId = null } = {}) {
+  const { data: existing, error: readErr } = await supabase
+    .from("bank_match_links")
+    .select("id, book_kind, book_id")
+    .eq("line_id", lineId);
+  if (readErr) throw readErr;
+
+  const wanted = new Map(links.map((k) => [`${k.bookKind}:${k.bookId}`, k]));
+  const have = new Map((existing || []).map((r) => [`${r.book_kind}:${r.book_id}`, r]));
+  const staleIds = [...have].filter(([key]) => !wanted.has(key)).map(([, r]) => r.id);
+  if (staleIds.length) {
+    const { error } = await supabase.from("bank_match_links").delete().in("id", staleIds);
+    if (error) throw error;
+  }
+  const fresh = [...wanted].filter(([key]) => !have.has(key)).map(([, k]) => ({
+    line_id: lineId,
+    book_kind: k.bookKind,
+    book_id: k.bookId,
+    source: k.source || source,
+  }));
+  if (fresh.length) {
+    const { error } = await supabase.from("bank_match_links").insert(fresh);
+    if (error) throw isLinkConflict(error) ? new Error(LINK_CONFLICT_MESSAGE) : error;
+  }
+  await updateBankStatementLine(lineId, linksToLinePatch(links, { status, userId }));
+}
+
+// Remove every link of a line and clear the mirrored columns. `status` is the
+// line's new status ('unmatched' for Unmatch, 'ignored' for Ignore).
+export async function removeMatchLinks(lineId, { status = "unmatched" } = {}) {
+  const { error } = await supabase.from("bank_match_links").delete().eq("line_id", lineId);
+  if (error) throw error;
+  await updateBankStatementLine(lineId, {
+    status,
+    match_kind: null,
+    match_id: null,
+    matched_at: null,
+    matched_by: null,
+  });
 }
 
 export async function deleteBankStatement(id) {

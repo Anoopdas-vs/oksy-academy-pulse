@@ -18,6 +18,12 @@ import {
   planRerun,
   suggestSplitGroups,
   reviewCandidatesDetail,
+  matchStatementLines,
+  describeLine,
+  attachLinks,
+  linksToLinePatch,
+  isLinkConflict,
+  LINK_CONFLICT_MESSAGE,
 } from "./reconcile.js";
 
 describe("accountLedger", () => {
@@ -534,5 +540,171 @@ describe("review tooltip + assumed-by-order flag", () => {
     assert.equal(isOrderAssumed({ status: "matched", match_score: String(ORDER_ASSUMED_SCORE) }), true);
     assert.equal(isOrderAssumed({ status: "matched", match_score: "0.94" }), false);
     assert.equal(isOrderAssumed({ status: "review", match_score: null }), false);
+  });
+});
+
+describe("matchStatementLines — link-based passes", () => {
+  const col = (id, date, amount, extra = {}) => ({ id, account: "HDFC", date, amount, student_name: `S${id}`, ...extra });
+  const exp = (id, date, amount, extra = {}) => ({ id, account: "HDFC", date, amount, category: "Misc", ...extra });
+  const cr = (seq, date, deposit, extra = {}) => ({ seq, date, deposit, withdrawal: 0, description: "", reference: "", ...extra });
+  const dr = (seq, date, withdrawal, extra = {}) => ({ seq, date, deposit: 0, withdrawal, description: "", reference: "", ...extra });
+  const run = (lines, data, opts) =>
+    matchStatementLines(lines, "HDFC", { collections: [], expenses: [], transfers: [], ...data }, opts);
+
+  test("UTR match with equal amount links as auto_utr", () => {
+    const [r] = run(
+      [cr(1, "2026-03-05", 1800, { description: "UPI/123456789012/x" })],
+      { collections: [col(7, "2026-03-09", 1800, { bank_reference: "UPI 123456789012" })] }
+    );
+    assert.equal(r.status, "matched");
+    assert.deepEqual(r.links, [{ bookKind: "collection", bookId: 7, source: "auto_utr" }]);
+  });
+
+  test("UTR with a different amount goes to review, not linked (utr_amount_mismatch)", () => {
+    const [r] = run(
+      [cr(1, "2026-03-05", 1800, { description: "UPI/123456789012/x" })],
+      { collections: [col(7, "2026-03-05", 2000, { bank_reference: "123456789012" })] }
+    );
+    assert.equal(r.status, "review");
+    assert.equal(r.reason, "utr_amount_mismatch");
+    assert.deepEqual(r.links, []);
+    assert.equal(r.candidates[0].bookId, 7);
+  });
+
+  test("three identical 1,800 lines vs three identical 1,800 collections one day: none auto-linked, all review", () => {
+    const res = run(
+      [1, 2, 3].map((n) => cr(n, "2026-03-05", 1800)),
+      { collections: [1, 2, 3].map((n) => col(n, "2026-03-05", 1800)) }
+    );
+    res.forEach((r) => {
+      assert.equal(r.status, "review");
+      assert.deepEqual(r.links, []);
+      assert.equal(r.candidates.length, 3);
+    });
+  });
+
+  test("one 2,800 line = 2,000 + 800 same day, unique combination -> auto_group", () => {
+    const [r] = run(
+      [cr(1, "2026-03-05", 2800)],
+      { collections: [col(1, "2026-03-05", 2000), col(2, "2026-03-05", 800)] }
+    );
+    assert.equal(r.status, "matched");
+    assert.deepEqual(r.links.map((k) => k.source), ["auto_group", "auto_group"]);
+    const books = r.links.map((k) => ({ date: "2026-03-05", amount: k.bookId === 1 ? 2000 : 800 }));
+    const d = describeLine({ txn_date: "2026-03-05", deposit: 2800, withdrawal: 0 }, books);
+    assert.equal(d.result, "GROUP");
+    assert.equal(d.amountDiff, 0);
+    assert.deepEqual(d.bookAmounts, ["2,000.00", "800.00"]);
+  });
+
+  test("lines 2,000 + 800 + 2,000 vs entries 2,800 + 2,000 same day: not linked, flagged split_needed", () => {
+    const res = run(
+      [cr(1, "2026-03-05", 2000), cr(2, "2026-03-05", 800), cr(3, "2026-03-05", 2000)],
+      { collections: [col(1, "2026-03-05", 2800), col(2, "2026-03-05", 2000)] }
+    );
+    res.forEach((r) => {
+      assert.deepEqual(r.links, []);
+      assert.equal(r.status, "review");
+      assert.equal(r.reason, "split_needed");
+    });
+  });
+
+  test("expense one day before the bank date, unique amount -> review near-date suggestion, dateDiff 1", () => {
+    const [r] = run([dr(1, "2026-03-06", 540)], { expenses: [exp(4, "2026-03-05", 540)] });
+    assert.equal(r.status, "review");
+    assert.equal(r.reason, "near_date_suggestion");
+    assert.deepEqual(r.links, []);
+    assert.equal(r.candidates[0].bookId, 4);
+    assert.equal(r.candidates[0].dateDiff, 1);
+    assert.equal(r.candidates[0].suggested, true);
+  });
+
+  test("an entry already linked (usedKeys) is never offered to another line", () => {
+    const [r] = run(
+      [cr(1, "2026-03-05", 1800)],
+      { collections: [col(1, "2026-03-05", 1800)] },
+      { usedKeys: ["collection:1"] }
+    );
+    assert.equal(r.status, "unmatched");
+    assert.deepEqual(r.candidates, []);
+  });
+
+  test("an entry is used by at most one line within a run", () => {
+    const res = run(
+      [cr(1, "2026-03-05", 1800), cr(2, "2026-03-05", 1800)],
+      { collections: [col(1, "2026-03-05", 1800)] }
+    );
+    assert.equal(res.filter((r) => r.links.length).length, 0);
+  });
+
+  test("a credit never matches an expense; a debit never matches a collection", () => {
+    const [c] = run([cr(1, "2026-03-05", 500)], { expenses: [exp(1, "2026-03-05", 500)] });
+    const [d] = run([dr(1, "2026-03-05", 500)], { collections: [col(1, "2026-03-05", 500)] });
+    assert.equal(c.status, "unmatched");
+    assert.equal(d.status, "unmatched");
+  });
+
+  test("a single unique exact date + amount pair links as auto_exact", () => {
+    const [r] = run([cr(1, "2026-03-05", 1800)], { collections: [col(9, "2026-03-05", 1800)] });
+    assert.deepEqual(r.links, [{ bookKind: "collection", bookId: 9, source: "auto_exact" }]);
+  });
+});
+
+describe("describeLine", () => {
+  const line = { txn_date: "2026-03-05", deposit: 1800, withdrawal: 0 };
+  test("MATCH: one link, no date or amount gap", () => {
+    const d = describeLine(line, [{ date: "2026-03-05", amount: 1800 }]);
+    assert.deepEqual([d.result, d.dateDiff, d.amountDiff], ["MATCH", 0, 0]);
+  });
+  test("GROUP: two links summing to the line", () => {
+    const d = describeLine(
+      { txn_date: "2026-03-05", deposit: 2800, withdrawal: 0 },
+      [{ date: "2026-03-05", amount: 2000 }, { date: "2026-03-05", amount: 800 }]
+    );
+    assert.equal(d.result, "GROUP");
+    assert.deepEqual(d.bookAmounts, ["2,000.00", "800.00"]);
+  });
+  test("DATE_DIFF: amount equal, book dated a day earlier", () => {
+    const d = describeLine(line, [{ date: "2026-03-04", amount: 1800 }]);
+    assert.deepEqual([d.result, d.dateDiff, d.amountDiff], ["DATE_DIFF", 1, 0]);
+  });
+  test("AMOUNT_DIFF takes priority and is bank minus the sum of books", () => {
+    const d = describeLine(line, [{ date: "2026-03-04", amount: 1700 }]);
+    assert.deepEqual([d.result, d.amountDiff], ["AMOUNT_DIFF", 100]);
+  });
+  test("UNMATCHED with no links; REVIEW when the line status is review", () => {
+    assert.equal(describeLine(line, []).result, "UNMATCHED");
+    assert.equal(describeLine({ ...line, status: "review" }, []).result, "REVIEW");
+  });
+});
+
+describe("link read/write helpers", () => {
+  test("attachLinks prefers link rows and falls back to match_kind/match_id", () => {
+    const lines = [
+      { id: 1, status: "matched", match_kind: "collection", match_id: 5 },
+      { id: 2, status: "matched", match_kind: "expense", match_id: 8 },
+      { id: 3, status: "unmatched", match_kind: null, match_id: null },
+    ];
+    const out = attachLinks(lines, [
+      { line_id: 1, book_kind: "collection", book_id: 5, source: "auto_exact" },
+      { line_id: 1, book_kind: "collection", book_id: 6, source: "auto_group" },
+    ]);
+    assert.equal(out[0].links.length, 2);
+    assert.deepEqual(out[1].links, [{ bookKind: "expense", bookId: 8, source: "legacy" }]);
+    assert.deepEqual(out[2].links, []);
+  });
+
+  test("linksToLinePatch mirrors the first link into match_kind/match_id", () => {
+    const p = linksToLinePatch(
+      [{ bookKind: "collection", bookId: 5 }, { bookKind: "collection", bookId: 6 }],
+      { userId: "u1", now: "T" }
+    );
+    assert.deepEqual(p, { status: "matched", match_kind: "collection", match_id: 5, matched_at: "T", matched_by: "u1" });
+  });
+
+  test("a unique violation is recognised and has a clear message", () => {
+    assert.equal(isLinkConflict({ code: "23505" }), true);
+    assert.equal(isLinkConflict({ message: "boom" }), false);
+    assert.match(LINK_CONFLICT_MESSAGE, /already linked to another bank line/);
   });
 });

@@ -17,7 +17,7 @@ import {
   studentFeeTotals,
 } from "./lib/fees.js";
 import { parseBankStatement } from "./lib/bankStatement.js";
-import { autoMatch } from "./lib/reconcile.js";
+import { attachLinks, matchStatementLines } from "./lib/reconcile.js";
 import { getAccess } from "./lib/access.js";
 import {
   fetchStudents,
@@ -41,6 +41,10 @@ import {
   deleteTransfer,
   fetchBankStatements,
   fetchBankStatementLines,
+  fetchMatchLinks,
+  fetchStatementLineIds,
+  saveMatchLinks,
+  removeMatchLinks,
   createBankStatement,
   updateBankStatementLine,
   updateBankStatementLineIfOpen,
@@ -423,12 +427,13 @@ function AppShell() {
       return;
     }
     try {
-      const [statementRows, lineRows] = await Promise.all([
+      const [statementRows, lineRows, linkRows] = await Promise.all([
         fetchBankStatements(),
         fetchBankStatementLines(),
+        fetchMatchLinks(),
       ]);
       setBankStatements(statementRows);
-      setBankLines(lineRows);
+      setBankLines(attachLinks(lineRows, linkRows));
       bankLoadedRef.current = true;
     } catch (err) {
       setDataError(friendlyError(err));
@@ -853,7 +858,7 @@ function AppShell() {
     try {
       const buffer = await file.arrayBuffer();
       const parsed = await parseBankStatement(buffer);
-      const matches = autoMatch(parsed.lines, account, { collections, expenses, transfers });
+      const matches = matchStatementLines(parsed.lines, account, { collections, expenses, transfers });
 
       const lineRows = parsed.lines.map((ln, i) => ({
         seq: ln.seq,
@@ -864,14 +869,15 @@ function AppShell() {
         deposit: ln.deposit,
         running_balance: ln.runningBalance,
         status: matches[i].status,
-        match_kind: matches[i].match_kind || null,
-        match_id: matches[i].match_id || null,
-        match_score: matches[i].match_score ?? null,
+        // Dual-write: the first link mirrors into the legacy columns.
+        match_kind: matches[i].links[0]?.bookKind || null,
+        match_id: matches[i].links[0]?.bookId ?? null,
+        match_score: null,
         matched_at: matches[i].status === "matched" ? new Date().toISOString() : null,
         matched_by: matches[i].status === "matched" ? profile.id : null,
       }));
 
-      await createBankStatement(
+      const statementId = await createBankStatement(
         {
           account,
           period_start: parsed.periodStart,
@@ -884,29 +890,32 @@ function AppShell() {
         profile.id
       );
 
+      // Store the links (a line may link to several entries) against the ids
+      // the database just assigned, paired by statement sequence.
+      const idBySeq = new Map((await fetchStatementLineIds(statementId)).map((r) => [r.seq, r.id]));
+      const matchedLines = parsed.lines
+        .map((ln, i) => ({ ln, m: matches[i] }))
+        .filter(({ m }) => m.status === "matched");
+      for (const { ln, m } of matchedLines) {
+        await saveMatchLinks(idBySeq.get(ln.seq), m.links, "auto_exact", { userId: profile.id });
+      }
+
       // Auto-matched collections/expenses/transfers get the full bank line
       // description/reference written onto them as a permanent audit trail
       // (see the "Fix Bank Reconciliation Matching Logic" brief) -- same as
       // a manual match/classification does below.
-      const matchedLines = parsed.lines
-        .map((ln, i) => ({ ln, m: matches[i] }))
-        .filter(({ m }) => m.status === "matched");
       const bankRefUpdaters = {
         collection: (id, patch) => updateCollection(id, patch),
         expense: (id, patch) => updateExpense(id, patch, profile.id),
         transfer: (id, patch) => updateTransfer(id, patch),
       };
-      // Order-assumed pairings are a guess, not evidence: never stamp them
-      // onto the record's audit trail.
-      const bankRefWrites = matchedLines.filter(
-        ({ m }) => bankRefUpdaters[m.match_kind] && !m.assumed_by_order
+      const bankRefWrites = matchedLines.flatMap(({ ln, m }) =>
+        m.links.filter((k) => bankRefUpdaters[k.bookKind]).map((k) => ({ ln, k }))
       );
       if (bankRefWrites.length) {
         await Promise.all(
-          bankRefWrites.map(({ ln, m }) =>
-            bankRefUpdaters[m.match_kind](m.match_id, {
-              bank_reference: bankReferenceText(ln),
-            })
+          bankRefWrites.map(({ ln, k }) =>
+            bankRefUpdaters[k.bookKind](k.bookId, { bank_reference: bankReferenceText(ln) })
           )
         );
       }
@@ -945,6 +954,11 @@ function AppShell() {
             }
           : { status: c.new_status, match_kind: null, match_id: null, match_score: null };
         const applied = await updateBankStatementLineIfOpen(c.line.id, patch);
+        if (applied && matched) {
+          await saveMatchLinks(c.line.id, [{ bookKind: c.match_kind, bookId: c.match_id }], "auto_exact", {
+            userId: profile.id,
+          });
+        }
         if (applied && matched && !c.assumed_by_order && bankRefUpdaters[c.match_kind]) {
           await bankRefUpdaters[c.match_kind](c.match_id, { bank_reference: bankReferenceText(c.line) });
         }
@@ -975,12 +989,8 @@ function AppShell() {
         } else if (input.linkKind === "transfer") {
           await updateTransfer(input.linkId, { bank_reference: bankReferenceText(line) });
         }
-        await updateBankStatementLine(line.id, {
-          status: "matched",
-          match_kind: input.linkKind,
-          match_id: input.linkId,
-          matched_at: new Date().toISOString(),
-          matched_by: profile.id,
+        await saveMatchLinks(line.id, [{ bookKind: input.linkKind, bookId: input.linkId }], "manual", {
+          userId: profile.id,
         });
         await Promise.all([loadData(), loadBankData()]);
         return;
@@ -1040,13 +1050,20 @@ function AppShell() {
         throw new Error("Unknown classification.");
       }
 
-      await updateBankStatementLine(line.id, {
-        status: "classified",
-        match_kind: input.kind,
-        match_id: created ? created.id : null,
-        matched_at: new Date().toISOString(),
-        matched_by: profile.id,
-      });
+      if (created) {
+        await saveMatchLinks(line.id, [{ bookKind: input.kind, bookId: created.id }], "manual", {
+          status: "classified",
+          userId: profile.id,
+        });
+      } else {
+        await updateBankStatementLine(line.id, {
+          status: "classified",
+          match_kind: input.kind,
+          match_id: null,
+          matched_at: new Date().toISOString(),
+          matched_by: profile.id,
+        });
+      }
       await Promise.all([loadData(), loadBankData()]);
     } catch (err) {
       setDataError(friendlyError(err));
@@ -1059,11 +1076,7 @@ function AppShell() {
   const setBankLineIgnored = async (line, ignored) => {
     setBankBusy(true);
     try {
-      await updateBankStatementLine(line.id, {
-        status: ignored ? "ignored" : "unmatched",
-        match_kind: null,
-        match_id: null,
-      });
+      await removeMatchLinks(line.id, { status: ignored ? "ignored" : "unmatched" });
       await Promise.all([loadData(), loadBankData()]);
     } catch (err) {
       setDataError(friendlyError(err));
@@ -1083,13 +1096,7 @@ function AppShell() {
         else if (line.match_kind === "transfer") await deleteTransfer(line.match_id);
         else if (line.match_kind === "collection") await deleteCollection(line.match_id);
       }
-      await updateBankStatementLine(line.id, {
-        status: "unmatched",
-        match_kind: null,
-        match_id: null,
-        matched_at: null,
-        matched_by: null,
-      });
+      await removeMatchLinks(line.id);
       await Promise.all([loadData(), loadBankData()]);
     } catch (err) {
       setDataError(friendlyError(err));
