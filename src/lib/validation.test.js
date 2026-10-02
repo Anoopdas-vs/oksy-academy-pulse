@@ -10,6 +10,9 @@ import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import {
   friendlyError,
+  BANK_REFERENCE_MAX,
+  normalizeBankReference,
+  validateBankReference,
   isBlank,
   isValidDateStr,
   isPositiveNumber,
@@ -282,5 +285,32 @@ describe("friendlyError for student personal-field constraints", () => {
     } finally {
       console.error = orig;
     }
+  });
+});
+
+describe("UTR / Reference no (collections.bank_reference)", () => {
+  test("blank and whitespace normalise to null; text is trimmed but otherwise kept as typed", () => {
+    assert.equal(normalizeBankReference(""), null);
+    assert.equal(normalizeBankReference("   "), null);
+    assert.equal(normalizeBankReference(undefined), null);
+    assert.equal(normalizeBankReference("  534608284353 "), "534608284353");
+    assert.equal(normalizeBankReference("UPI/534608284353/UPI/x@ybl/SBI"), "UPI/534608284353/UPI/x@ybl/SBI");
+  });
+
+  test("the field is optional", () => {
+    assert.equal(validateBankReference(""), "");
+    assert.equal(validateBankReference(null), "");
+  });
+
+  test("a new value up to 200 characters is valid, 201 is rejected", () => {
+    assert.equal(validateBankReference("x".repeat(BANK_REFERENCE_MAX)), "");
+    assert.match(validateBankReference("x".repeat(BANK_REFERENCE_MAX + 1)), /at most 200/);
+  });
+
+  test("an unchanged stored value always validates, even if longer than 200 (reconciliation stores up to 500)", () => {
+    const stored = "UPI/534608284353/".padEnd(450, "z");
+    assert.equal(validateBankReference(stored, stored), "");
+    assert.equal(validateBankReference(`  ${stored}  `, stored), "");
+    assert.match(validateBankReference(stored + "more", stored), /at most 200/);
   });
 });

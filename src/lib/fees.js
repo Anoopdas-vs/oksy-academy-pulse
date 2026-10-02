@@ -85,3 +85,7 @@ export function studentFeeTotals(students, collections) {
   });
   return { expected, collected, outstanding: outstandingTotal, byStudent };
 }
+
+// Fields the Fee Collection list search matches against (case-insensitive
+// substring). bank_reference is included so a fee can be found by its UTR.
+export const COLLECTION_SEARCH_FIELDS = ["student_id", "student_name", "type", "reference", "bank_reference"];

@@ -1,3 +1,4 @@
+import { localDateString, excelSerialToISO } from "./dates.js";
 // Bank statement parser. Dynamically loads xlsx on demand when a statement is uploaded.
 // Parse an uploaded bank statement workbook into a normalised shape:
 //   { periodStart, periodEnd, openingBalance, closingBalance, lines: [...] }
@@ -48,7 +49,13 @@ const MONTHS = {
 export function parseStatementDate(value) {
   if (value === undefined || value === null || value === "") return null;
   if (value instanceof Date && !Number.isNaN(value.getTime())) {
-    return value.toISOString().slice(0, 10);
+    // Local calendar fields, not toISOString(): SheetJS builds cellDates at
+    // local midnight, which UTC conversion would move back a day in IST.
+    return localDateString(value);
+  }
+  // Raw Excel serial (cell not recognised as a date), e.g. 45876 -> 2025-08-07.
+  if (typeof value === "number" && value > 20000 && value < 80000) {
+    return excelSerialToISO(value);
   }
   const s = String(value).trim();
 

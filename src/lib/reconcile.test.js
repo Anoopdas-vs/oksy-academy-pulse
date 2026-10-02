@@ -6,13 +6,49 @@ import assert from "node:assert/strict";
 import {
   accountLedger,
   bookBalanceAsOf,
-  autoMatch,
   reconciliationSummary,
   nameSimilarity,
   identityMatchScore,
   bankReferenceMismatches,
-  matchedRecordDetail,
+  extractUtrs,
+  planRerun,
+  suggestSplitGroups,
+  matchStatementLines,
+  describeLine,
+  attachLinks,
+  linksToLinePatch,
+  isLinkConflict,
+  ledgerByKeyOf,
+  buildReconRows,
+  reviewHints,
+  reconFilterCounts,
+  reconRowMatchesFilter,
+  linkCandidates,
+  filterLinkCandidates,
+  summarizeSelection,
+  buildManualLinkPayload,
+  bookOnlyEntries,
+  linkedKeys,
+  bankReferenceText,
+  buildSyncPreview,
+  buildSyncPayload,
+  defaultSyncSelection,
+  setMasterDate,
+  selectAllSync,
+  groupSyncRuns,
+  multiAccountTransferKeys,
+  LINK_CONFLICT_MESSAGE,
 } from "./reconcile.js";
+
+
+// Thin adapter so the older single-match expectations below read the same
+// way against matchStatementLines (first link mirrored as match_kind/id).
+const autoMatch = (lines, account, data, _dayWindow, opts) =>
+  matchStatementLines(lines, account, { collections: [], expenses: [], transfers: [], ...data }, opts).map((r) => ({
+    ...r,
+    match_kind: r.links[0]?.bookKind,
+    match_id: r.links[0]?.bookId,
+  }));
 
 describe("accountLedger", () => {
   test("collections are positive, expenses negative, transfers signed by direction", () => {
@@ -62,8 +98,16 @@ describe("autoMatch", () => {
     transfers: [],
   };
 
-  test("matches a deposit line to a collection of the same amount within the day window", () => {
+  test("a deposit one day off a collection of the same amount is only suggested, never auto-linked", () => {
     const lines = [{ date: "2026-01-06", deposit: 1000, withdrawal: 0 }];
+    const [result] = autoMatch(lines, "HDFC", data, 4);
+    assert.equal(result.status, "review");
+    assert.equal(result.reason, "near_date_suggestion");
+    assert.equal(result.match_id, undefined);
+  });
+
+  test("matches a same-date deposit line to a collection of the same amount", () => {
+    const lines = [{ date: "2026-01-05", deposit: 1000, withdrawal: 0 }];
     const [result] = autoMatch(lines, "HDFC", data, 4);
     assert.equal(result.status, "matched");
     assert.equal(result.match_kind, "collection");
@@ -71,7 +115,7 @@ describe("autoMatch", () => {
   });
 
   test("matches a withdrawal line to an expense", () => {
-    const lines = [{ date: "2026-01-21", deposit: 0, withdrawal: 300 }];
+    const lines = [{ date: "2026-01-20", deposit: 0, withdrawal: 300 }];
     const [result] = autoMatch(lines, "HDFC", data, 4);
     assert.equal(result.status, "matched");
     assert.equal(result.match_kind, "expense");
@@ -89,14 +133,14 @@ describe("autoMatch", () => {
     assert.equal(result.status, "unmatched");
   });
 
-  test("each app entry is consumed at most once — a second identical line doesn't double-match", () => {
+  test("an entry two identical lines both want is handed to neither (never guessed)", () => {
     const lines = [
-      { date: "2026-01-06", deposit: 1000, withdrawal: 0 },
-      { date: "2026-01-06", deposit: 1000, withdrawal: 0 },
+      { date: "2026-01-05", deposit: 1000, withdrawal: 0 },
+      { date: "2026-01-05", deposit: 1000, withdrawal: 0 },
     ];
     const [first, second] = autoMatch(lines, "HDFC", data, 4);
-    assert.equal(first.status, "matched");
-    assert.equal(second.status, "unmatched");
+    assert.equal(first.status, "review");
+    assert.equal(second.status, "review");
   });
 });
 
@@ -195,13 +239,12 @@ describe("autoMatch — same-amount, same-day collision (regression, Fahmida/Fas
     assert.equal(result.match_id, 101);
   });
 
-  test("without any identity signal in the description, the same two candidates are flagged for review instead of guessed", () => {
+  test("without any identity signal, the unique exact-date candidate (Fahmida, same day) is still matched -- never the next-day Fasila", () => {
     const blankLine = { ...bankLine, description: "", reference: "" };
     const [result] = autoMatch([blankLine], "ICICI", data, 4);
-    assert.equal(result.status, "review");
-    assert.equal(result.candidates.length, 2);
-    const ids = result.candidates.map((c) => c.match_id).sort();
-    assert.deepEqual(ids, [101, 102]);
+    assert.equal(result.status, "matched");
+    assert.equal(result.match_id, 101);
+    assert.equal(result.links[0].source, "auto_exact");
   });
 
   test("two same-amount, same-day candidates with no decisive identity signal are never silently auto-matched", () => {
@@ -256,49 +299,865 @@ describe("bankReferenceMismatches", () => {
   });
 });
 
-describe("matchedRecordDetail — bank reference row", () => {
-  test("shows a Bank reference row for a matched expense that has one", () => {
-    const line = { match_kind: "expense", match_id: 1 };
-    const data = {
-      expenses: [
-        { id: 1, date: "2026-01-05", category: "Rent", account: "HDFC", amount: 500, bank_reference: "NEFT/RENT/JAN" },
+/* ---- exact-date / UTR / group / re-run passes (production statement #8 shapes) ---- */
+
+const col = (id, date, amount, student_name, extra = {}) => ({ id, account: "ICICI", date, amount, student_name, ...extra });
+const dep = (date, amount, description = "UPI/1/UPI/zzz0000@ok/BANK/X", extra = {}) => ({
+  date,
+  deposit: amount,
+  withdrawal: 0,
+  description,
+  reference: "-",
+  ...extra,
+});
+const ids = (results) => results.map((r) => r.match_id ?? null);
+
+describe("autoMatch — unique exact date + amount (lines #13/#14 shape)", () => {
+  const data = {
+    collections: [
+      col(93, "2025-08-21", 1500, "NAJLA NASRIN"),
+      col(91, "2025-08-22", 1500, "HISANA SHERIN"),
+      col(96, "2025-08-24", 1500, "RAFEEDHA"),
+    ],
+  };
+  test("each line takes its own exact-date record even with no name evidence and same-amount neighbours in the window", () => {
+    const res = autoMatch([dep("2025-08-21", 1500), dep("2025-08-22", 1500)], "ICICI", data);
+    assert.deepEqual(res.map((r) => r.status), ["matched", "matched"]);
+    assert.deepEqual(ids(res), [93, 91]);
+    assert.ok(res.every((r) => !r.assumed_by_order));
+  });
+
+  test("lines #25/#28 shape: each has one exact record and neither steals the other's", () => {
+    const d = { collections: [col(117, "2025-09-11", 1500, "HIBA SHERIN"), col(544, "2025-09-15", 1500, "FARSEENA OP")] };
+    const res = autoMatch([dep("2025-09-11", 1500), dep("2025-09-15", 1500)], "ICICI", d);
+    assert.deepEqual(ids(res), [117, 544]);
+  });
+
+  test("a record claimed as exact-date by two lines is not handed to either by the exact pass", () => {
+    const d = { collections: [col(1, "2026-01-05", 700, "A B")] };
+    const res = autoMatch([dep("2026-01-05", 700), dep("2026-01-05", 700)], "ICICI", d);
+    assert.equal(res.filter((r) => r.status === "matched").length, 0); // contested: neither gets it
+  });
+
+});
+
+describe("autoMatch — UTR pass", () => {
+  test("a record carrying the line's 12-digit UTR wins over an exact-date record", () => {
+    const d = {
+      collections: [
+        col(1, "2025-09-15", 2000, "EXACT DATE"),
+        col(2, "2025-09-13", 2000, "HAS UTR", { reference: "Bank: UPI/562413109000/UPI/x/ICI" }),
       ],
     };
-    const detail = matchedRecordDetail(line, data);
-    assert.ok(detail.rows.some((r) => r.k === "Bank reference" && r.v === "NEFT/RENT/JAN"));
+    const [r] = autoMatch([dep("2025-09-15", 2000, "UPI/562413109000/UPI/shakirparasseri/South IndianBa/ICI0")], "ICICI", d);
+    assert.equal(r.match_id, 2);
+    assert.equal(r.links[0].source, "auto_utr");
   });
 
-  test("omits the Bank reference row for an expense without one", () => {
-    const line = { match_kind: "expense", match_id: 1 };
-    const data = { expenses: [{ id: 1, date: "2026-01-05", category: "Rent", account: "HDFC", amount: 500 }] };
-    const detail = matchedRecordDetail(line, data);
-    assert.ok(!detail.rows.some((r) => r.k === "Bank reference"));
+  test("extractUtrs only takes standalone 12-digit runs", () => {
+    assert.deepEqual(extractUtrs("UPI/562413109000/UPI/a9876543210123456@ok"), ["562413109000"]);
+    assert.deepEqual(extractUtrs("8113973475@axl"), []);
   });
 
-  test("shows a Bank reference row for a matched transfer that has one", () => {
-    const line = { match_kind: "transfer", match_id: 1 };
-    const data = {
-      transfers: [
-        {
-          id: 1,
-          date: "2026-01-05",
-          from_account: "HDFC",
-          to_account: "Cash",
-          amount: 200,
-          bank_reference: "ATM WDL 200",
-        },
+  test("a UTR hit with equal amount links even when the dates differ (the UTR is the evidence)", () => {
+    const d = { collections: [col(2, "2025-01-01", 2000, "FAR", { bank_reference: "UPI/562413109000/x" })] };
+    const [r] = autoMatch([dep("2025-09-15", 2000, "UPI/562413109000/UPI/q")], "ICICI", d);
+    assert.equal(r.status, "matched");
+    assert.equal(r.links[0].source, "auto_utr");
+  });
+});
+
+describe("autoMatch — consumed records", () => {
+  test("usedKeys seeds records that must not be matched again", () => {
+    const d = { collections: [col(1, "2026-01-05", 1000, "X Y")] };
+    const [r] = autoMatch([dep("2026-01-05", 1000)], "ICICI", d, 4, { usedKeys: ["collection:1"] });
+    assert.equal(r.status, "unmatched");
+  });
+});
+
+describe("planRerun — only touches open lines", () => {
+  const data = {
+    collections: [col(1, "2026-04-01", 1500, "A B"), col(2, "2026-04-02", 1500, "C D"), col(3, "2026-04-03", 800, "E F")],
+  };
+  const row = (id, seq, txn_date, deposit, status, extra = {}) => ({
+    id, seq, account: "ICICI", txn_date, deposit, withdrawal: 0, description: "UPI/x", reference: "-", status, ...extra,
+  });
+  const lines = [
+    row(10, 1, "2026-04-01", 1500, "review"),
+    row(11, 2, "2026-04-02", 1500, "matched", { match_kind: "collection", match_id: 2 }),
+    row(12, 3, "2026-04-03", 800, "ignored"),
+    row(13, 4, "2026-04-09", 5000, "unmatched"),
+  ];
+
+  test("matched/ignored lines never appear in the plan; the held record is not reused", () => {
+    const plan = planRerun(lines, lines, "ICICI", data);
+    assert.deepEqual(plan.map((c) => c.line.id), [10]);
+    assert.equal(plan[0].old_status, "review");
+    assert.equal(plan[0].new_status, "matched");
+    assert.equal(plan[0].match_id, 1);
+  });
+
+  test("lines whose outcome is unchanged are omitted", () => {
+    const plan = planRerun(lines, lines, "ICICI", data);
+    assert.ok(!plan.some((c) => c.line.id === 13));
+  });
+
+  test("a record held by a matched line of another statement is excluded", () => {
+    const all = [...lines, row(99, 1, "2026-04-01", 1500, "matched", { match_kind: "collection", match_id: 1 })];
+    const plan = planRerun(lines, all, "ICICI", data);
+    assert.equal(plan.length, 1);
+    assert.equal(plan[0].new_status, "unmatched"); // record 1 is taken, so nothing to match
+    assert.equal(plan[0].match_id, null);
+  });
+});
+
+describe("suggestSplitGroups — suggestion only", () => {
+  const row = (id, seq, txn_date, deposit) => ({
+    id, seq, account: "ICICI", txn_date, deposit, withdrawal: 0, description: "UPI/x", reference: "-", status: "unmatched",
+  });
+
+  test("one 3600 line is suggested as the 1800 + 1800 pair on the same day (OKSY/000224 + 000225)", () => {
+    const d = { collections: [col(224, "2025-12-08", 1800, "SHIBILA KH"), col(225, "2025-12-08", 1800, "FAISHA")] };
+    const lines = [row(1, 104, "2025-12-08", 3600)];
+    const [s] = suggestSplitGroups(lines, lines, "ICICI", d);
+    assert.equal(s.total, 3600);
+    assert.deepEqual(s.options[0].map((e) => e.id).sort(), [224, 225]);
+  });
+
+  test("lines 2000 + 800 + 2000 are suggested as 3000 + 1800 (many lines to fewer records)", () => {
+    const d = {
+      collections: [col(243, "2025-12-15", 3000, "NASIYA"), col(245, "2025-12-15", 1800, "HIBA SHERIN")],
+    };
+    const lines = [row(1, 122, "2025-12-15", 2000), row(2, 123, "2025-12-15", 800), row(3, 124, "2025-12-15", 2000)];
+    const out = suggestSplitGroups(lines, lines, "ICICI", d);
+    const group = out.find((s) => s.lines.length === 3);
+    assert.equal(group.total, 4800);
+    assert.deepEqual(group.options[0].map((e) => e.id).sort(), [243, 245]);
+  });
+
+  test("suggestions never alter statuses and ignore records already held", () => {
+    const d = { collections: [col(224, "2025-12-08", 1800, "A"), col(225, "2025-12-08", 1800, "B")] };
+    const lines = [row(1, 104, "2025-12-08", 3600)];
+    const held = [{ ...row(9, 1, "2025-12-08", 1800), status: "matched", match_kind: "collection", match_id: 224 }];
+    assert.deepEqual(suggestSplitGroups(lines, [...lines, ...held], "ICICI", d), []);
+    assert.equal(lines[0].status, "unmatched");
+  });
+});
+
+describe("matchStatementLines — link-based passes", () => {
+  const col = (id, date, amount, extra = {}) => ({ id, account: "HDFC", date, amount, student_name: `S${id}`, ...extra });
+  const exp = (id, date, amount, extra = {}) => ({ id, account: "HDFC", date, amount, category: "Misc", ...extra });
+  const cr = (seq, date, deposit, extra = {}) => ({ seq, date, deposit, withdrawal: 0, description: "", reference: "", ...extra });
+  const dr = (seq, date, withdrawal, extra = {}) => ({ seq, date, deposit: 0, withdrawal, description: "", reference: "", ...extra });
+  const run = (lines, data, opts) =>
+    matchStatementLines(lines, "HDFC", { collections: [], expenses: [], transfers: [], ...data }, opts);
+
+  test("UTR match with equal amount links as auto_utr", () => {
+    const [r] = run(
+      [cr(1, "2026-03-05", 1800, { description: "UPI/123456789012/x" })],
+      { collections: [col(7, "2026-03-09", 1800, { bank_reference: "UPI 123456789012" })] }
+    );
+    assert.equal(r.status, "matched");
+    assert.deepEqual(r.links, [{ bookKind: "collection", bookId: 7, source: "auto_utr" }]);
+  });
+
+  test("UTR with a different amount goes to review, not linked (utr_amount_mismatch)", () => {
+    const [r] = run(
+      [cr(1, "2026-03-05", 1800, { description: "UPI/123456789012/x" })],
+      { collections: [col(7, "2026-03-05", 2000, { bank_reference: "123456789012" })] }
+    );
+    assert.equal(r.status, "review");
+    assert.equal(r.reason, "utr_amount_mismatch");
+    assert.deepEqual(r.links, []);
+    assert.equal(r.candidates[0].bookId, 7);
+  });
+
+  test("three identical 1,800 lines vs three identical 1,800 collections one day: none auto-linked, all review", () => {
+    const res = run(
+      [1, 2, 3].map((n) => cr(n, "2026-03-05", 1800)),
+      { collections: [1, 2, 3].map((n) => col(n, "2026-03-05", 1800)) }
+    );
+    res.forEach((r) => {
+      assert.equal(r.status, "review");
+      assert.deepEqual(r.links, []);
+      assert.equal(r.candidates.length, 3);
+    });
+  });
+
+  test("one 2,800 line = 2,000 + 800 same day, unique combination -> auto_group", () => {
+    const [r] = run(
+      [cr(1, "2026-03-05", 2800)],
+      { collections: [col(1, "2026-03-05", 2000), col(2, "2026-03-05", 800)] }
+    );
+    assert.equal(r.status, "matched");
+    assert.deepEqual(r.links.map((k) => k.source), ["auto_group", "auto_group"]);
+    const books = r.links.map((k) => ({ date: "2026-03-05", amount: k.bookId === 1 ? 2000 : 800 }));
+    const d = describeLine({ txn_date: "2026-03-05", deposit: 2800, withdrawal: 0 }, books);
+    assert.equal(d.result, "GROUP");
+    assert.equal(d.amountDiff, 0);
+    assert.deepEqual(d.bookAmounts, ["2,000.00", "800.00"]);
+  });
+
+  test("lines 2,000 + 800 + 2,000 vs entries 2,800 + 2,000 same day: not linked, flagged split_needed", () => {
+    const res = run(
+      [cr(1, "2026-03-05", 2000), cr(2, "2026-03-05", 800), cr(3, "2026-03-05", 2000)],
+      { collections: [col(1, "2026-03-05", 2800), col(2, "2026-03-05", 2000)] }
+    );
+    res.forEach((r) => {
+      assert.deepEqual(r.links, []);
+      assert.equal(r.status, "review");
+      assert.equal(r.reason, "split_needed");
+    });
+  });
+
+  test("expense one day before the bank date, unique amount -> review near-date suggestion, dateDiff 1", () => {
+    const [r] = run([dr(1, "2026-03-06", 540)], { expenses: [exp(4, "2026-03-05", 540)] });
+    assert.equal(r.status, "review");
+    assert.equal(r.reason, "near_date_suggestion");
+    assert.deepEqual(r.links, []);
+    assert.equal(r.candidates[0].bookId, 4);
+    assert.equal(r.candidates[0].dateDiff, 1);
+    assert.equal(r.candidates[0].suggested, true);
+  });
+
+  test("an entry already linked (usedKeys) is never offered to another line", () => {
+    const [r] = run(
+      [cr(1, "2026-03-05", 1800)],
+      { collections: [col(1, "2026-03-05", 1800)] },
+      { usedKeys: ["collection:1"] }
+    );
+    assert.equal(r.status, "unmatched");
+    assert.deepEqual(r.candidates, []);
+  });
+
+  test("an entry is used by at most one line within a run", () => {
+    const res = run(
+      [cr(1, "2026-03-05", 1800), cr(2, "2026-03-05", 1800)],
+      { collections: [col(1, "2026-03-05", 1800)] }
+    );
+    assert.equal(res.filter((r) => r.links.length).length, 0);
+  });
+
+  test("a credit never matches an expense; a debit never matches a collection", () => {
+    const [c] = run([cr(1, "2026-03-05", 500)], { expenses: [exp(1, "2026-03-05", 500)] });
+    const [d] = run([dr(1, "2026-03-05", 500)], { collections: [col(1, "2026-03-05", 500)] });
+    assert.equal(c.status, "unmatched");
+    assert.equal(d.status, "unmatched");
+  });
+
+  test("a single unique exact date + amount pair links as auto_exact", () => {
+    const [r] = run([cr(1, "2026-03-05", 1800)], { collections: [col(9, "2026-03-05", 1800)] });
+    assert.deepEqual(r.links, [{ bookKind: "collection", bookId: 9, source: "auto_exact" }]);
+  });
+});
+
+describe("describeLine", () => {
+  const line = { txn_date: "2026-03-05", deposit: 1800, withdrawal: 0 };
+  test("MATCH: one link, no date or amount gap", () => {
+    const d = describeLine(line, [{ date: "2026-03-05", amount: 1800 }]);
+    assert.deepEqual([d.result, d.dateDiff, d.amountDiff], ["MATCH", 0, 0]);
+  });
+  test("GROUP: two links summing to the line", () => {
+    const d = describeLine(
+      { txn_date: "2026-03-05", deposit: 2800, withdrawal: 0 },
+      [{ date: "2026-03-05", amount: 2000 }, { date: "2026-03-05", amount: 800 }]
+    );
+    assert.equal(d.result, "GROUP");
+    assert.deepEqual(d.bookAmounts, ["2,000.00", "800.00"]);
+  });
+  test("a group with a date gap is DATE_DIFF and still returns bookAmounts", () => {
+    const d = describeLine(
+      { txn_date: "2026-03-05", deposit: 2800, withdrawal: 0 },
+      [{ date: "2026-03-04", amount: 2000 }, { date: "2026-03-05", amount: 800 }]
+    );
+    assert.equal(d.result, "DATE_DIFF");
+    assert.equal(d.dateDiff, 1);
+    assert.deepEqual(d.bookAmounts, ["2,000.00", "800.00"]);
+  });
+  test("DATE_DIFF: amount equal, book dated a day earlier", () => {
+    const d = describeLine(line, [{ date: "2026-03-04", amount: 1800 }]);
+    assert.deepEqual([d.result, d.dateDiff, d.amountDiff], ["DATE_DIFF", 1, 0]);
+  });
+  test("AMOUNT_DIFF takes priority and is bank minus the sum of books", () => {
+    const d = describeLine(line, [{ date: "2026-03-04", amount: 1700 }]);
+    assert.deepEqual([d.result, d.amountDiff], ["AMOUNT_DIFF", 100]);
+  });
+  test("UNMATCHED with no links; REVIEW when the line status is review", () => {
+    assert.equal(describeLine(line, []).result, "UNMATCHED");
+    assert.equal(describeLine({ ...line, status: "review" }, []).result, "REVIEW");
+  });
+});
+
+describe("link read/write helpers", () => {
+  test("attachLinks prefers link rows and falls back to match_kind/match_id", () => {
+    const lines = [
+      { id: 1, status: "matched", match_kind: "collection", match_id: 5 },
+      { id: 2, status: "matched", match_kind: "expense", match_id: 8 },
+      { id: 3, status: "unmatched", match_kind: null, match_id: null },
+    ];
+    const out = attachLinks(lines, [
+      { line_id: 1, book_kind: "collection", book_id: 5, source: "auto_exact" },
+      { line_id: 1, book_kind: "collection", book_id: 6, source: "auto_group" },
+    ]);
+    assert.equal(out[0].links.length, 2);
+    assert.deepEqual(out[1].links, [{ bookKind: "expense", bookId: 8, source: "legacy" }]);
+    assert.deepEqual(out[2].links, []);
+  });
+
+  test("linksToLinePatch mirrors the first link into match_kind/match_id", () => {
+    const p = linksToLinePatch(
+      [{ bookKind: "collection", bookId: 5 }, { bookKind: "collection", bookId: 6 }],
+      { userId: "u1", now: "T" }
+    );
+    assert.deepEqual(p, { status: "matched", match_kind: "collection", match_id: 5, matched_at: "T", matched_by: "u1" });
+  });
+
+  test("a unique violation is recognised and has a clear message", () => {
+    assert.equal(isLinkConflict({ code: "23505" }), true);
+    assert.equal(isLinkConflict({ message: "boom" }), false);
+    assert.match(LINK_CONFLICT_MESSAGE, /already linked to another bank line/);
+  });
+});
+
+describe("matchStatementLines — name tie-break", () => {
+  const col = (id, name, extra = {}) => ({ id, account: "HDFC", date: "2026-03-05", amount: 1800, student_name: name, ...extra });
+  const cr = (seq, description) => ({ seq, date: "2026-03-05", deposit: 1800, withdrawal: 0, description, reference: "" });
+  const run = (lines, collections) => matchStatementLines(lines, "HDFC", { collections }, {});
+
+  test("links only when exactly one candidate's name is in the payer text (auto_name, name_confirmed)", () => {
+    const [r] = run(
+      [cr(1, "UPI/401/UPI/aboobeker12@okaxis/AXIS BANK")],
+      [col(1, "Sreeshma K"), col(2, "Aboobeker P"), col(3, "Mayiza")]
+    );
+    assert.equal(r.status, "matched");
+    assert.deepEqual(r.links, [{ bookKind: "collection", bookId: 2, source: "auto_name" }]);
+    assert.equal(r.reason, "name_confirmed");
+  });
+
+  test("two candidates that both match the payer -> review (name_ambiguous)", () => {
+    const [r] = run(
+      [cr(1, "UPI/401/UPI/amina9876@okaxis/SBI")],
+      [col(1, "Amina Rasheed"), col(2, "Amina Basheer")]
+    );
+    assert.equal(r.status, "review");
+    assert.equal(r.reason, "name_ambiguous");
+    assert.deepEqual(r.links, []);
+  });
+
+  test("a payer that matches nobody -> review (name_unknown)", () => {
+    const [r] = run([cr(1, "UPI/401/UPI/zzqxjw@okaxis/SBI")], [col(1, "Sreeshma K"), col(2, "Mayiza")]);
+    assert.equal(r.status, "review");
+    assert.equal(r.reason, "name_unknown");
+    assert.equal(r.candidates.length, 2);
+  });
+
+  test("a name token under 4 letters never matches", () => {
+    const [r] = run([cr(1, "UPI/401/UPI/ann0001@okaxis/SBI")], [col(1, "Ann"), col(2, "Bob")]);
+    assert.equal(r.status, "review");
+    assert.equal(r.reason, "name_unknown");
+  });
+
+  test("sibling case: one payer text names two students -> review, nothing linked", () => {
+    const [r] = run(
+      [cr(1, "UPI/401/UPI/rasheedfamily@okaxis/SBI")],
+      [col(1, "Rasheed Anas"), col(2, "Rasheed Hana")]
+    );
+    assert.equal(r.status, "review");
+    assert.equal(r.reason, "name_ambiguous");
+  });
+
+  test("an entry name-matched by two open lines is not linked to either", () => {
+    const res = run(
+      [cr(1, "UPI/1/UPI/sreeshma@okaxis/SBI"), cr(2, "UPI/2/UPI/sreeshma2@okaxis/SBI")],
+      [col(1, "Sreeshma K"), col(2, "Mayiza")]
+    );
+    res.forEach((r) => {
+      assert.equal(r.status, "review");
+      assert.deepEqual(r.links, []);
+    });
+  });
+
+  test("regression: three 1,800 lines vs three 1,800 fees with names present -> two name-confirmed, the unrelated one stays in review", () => {
+    const res = run(
+      [
+        cr(1, "UPI/1/UPI/sreeshmasreeshm@okaxis/AXIS BANK"),
+        cr(2, "UPI/2/UPI/aboobeker@oksbi/SBI"),
+        cr(3, "UPI/3/UPI/unrelatedhandle@ybl/SBI"),
       ],
-    };
-    const detail = matchedRecordDetail(line, data);
-    assert.ok(detail.rows.some((r) => r.k === "Bank reference" && r.v === "ATM WDL 200"));
+      [col(1, "Sreeshma"), col(2, "Aboobeker"), col(3, "Mayiza")]
+    );
+    assert.deepEqual(res.map((r) => r.links[0]?.bookId ?? null), [1, 2, null]);
+    assert.equal(res[2].status, "review");
+    assert.equal(res[2].reason, "name_unknown");
+    assert.ok(res.slice(0, 2).every((r) => r.links[0].source === "auto_name"));
   });
 
-  test("omits the Bank reference row for a transfer without one", () => {
-    const line = { match_kind: "transfer", match_id: 1 };
+  test("the same three lines with no names in the descriptions stay entirely in review", () => {
+    const res = run([cr(1, ""), cr(2, ""), cr(3, "")], [col(1, "Sreeshma"), col(2, "Aboobeker"), col(3, "Mayiza")]);
+    assert.ok(res.every((r) => r.status === "review" && r.links.length === 0));
+  });
+});
+
+describe("planRerun — uses the same passes", () => {
+  test("a re-run never guesses by order and never links a near-date entry", () => {
+    const data = { collections: [{ id: 1, account: "HDFC", date: "2026-04-01", amount: 900, student_name: "A B" }] };
+    const row = (id, seq, txn_date) => ({
+      id, seq, account: "HDFC", txn_date, deposit: 900, withdrawal: 0, description: "", reference: "", status: "unmatched",
+    });
+    const lines = [row(1, 1, "2026-04-02")];
+    const plan = planRerun(lines, lines, "HDFC", data);
+    assert.equal(plan[0].new_status, "review");
+    assert.equal(plan[0].reason, "near_date_suggestion");
+    assert.deepEqual(plan[0].links, []);
+  });
+});
+
+describe("buildReconRows — review table rows", () => {
+  const data = {
+    collections: [
+      { id: 236, account: "HDFC", date: "2026-03-05", amount: 1800, student_name: "A" },
+      { id: 245, account: "HDFC", date: "2026-03-06", amount: 2000, student_name: "B" },
+      { id: 243, account: "HDFC", date: "2026-03-06", amount: 800, student_name: "C" },
+      { id: 300, account: "HDFC", date: "2026-03-07", amount: 13000, student_name: "D" },
+    ],
+    expenses: [{ id: 273, account: "HDFC", date: "2026-03-05", amount: 540, category: "Misc" }],
+    transfers: [{ id: 12, from_account: "Cash", to_account: "HDFC", date: "2026-03-09", amount: 25000 }],
+  };
+  const ledger = ledgerByKeyOf(data);
+  const line = (id, extra) => ({
+    id, seq: id, status: "matched", txn_date: "2026-03-05", description: "x", deposit: 0, withdrawal: 0, links: [], ...extra,
+  });
+  const link = (bookKind, bookId, source = "auto_exact") => ({ bookKind, bookId, source });
+  const rowOf = (ln, hints) => buildReconRows([ln], ledger, hints)[0];
+
+  test("MATCH: one link, human book id, zero diffs, CR direction", () => {
+    const r = rowOf(line(1, { deposit: 1800, links: [link("collection", 236)] }));
+    assert.equal(r.result, "MATCH");
+    assert.equal(r.direction, "CR");
+    assert.equal(r.bankAmount, 1800);
+    assert.equal(r.links[0].label, "OKSY/000236");
+    assert.deepEqual([r.dateDiff, r.amountDiff], [0, 0]);
+  });
+
+  test("GROUP: two entries stay in ONE row with bookAmounts as an array", () => {
+    const rows = buildReconRows(
+      [line(2, { txn_date: "2026-03-06", deposit: 2800, links: [link("collection", 245, "auto_group"), link("collection", 243, "auto_group")] })],
+      ledger
+    );
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].result, "GROUP");
+    assert.deepEqual(rows[0].links.map((k) => k.label), ["OKSY/000245", "OKSY/000243"]);
+    assert.deepEqual(rows[0].bookAmounts, ["2,000.00", "800.00"]);
+    assert.deepEqual(rows[0].bookDates, ["2026-03-06", "2026-03-06"]);
+  });
+
+  test("DATE_DIFF: expense booked a day before the bank date, DR direction", () => {
+    const r = rowOf(line(3, { txn_date: "2026-03-06", withdrawal: 540, links: [link("expense", 273)] }));
+    assert.equal(r.result, "DATE_DIFF");
+    assert.equal(r.direction, "DR");
+    assert.equal(r.dateDiff, 1);
+    assert.equal(r.links[0].label, "EXP-00273");
+  });
+
+  test("AMOUNT_DIFF: bank 13,500 vs fee 13,000 is bank minus books", () => {
+    const r = rowOf(line(4, { txn_date: "2026-03-07", deposit: 13500, links: [link("collection", 300, "auto_utr")] }));
+    assert.equal(r.result, "AMOUNT_DIFF");
+    assert.equal(r.amountDiff, 500);
+  });
+
+  test("REVIEW: carries the hint reason and an unlinked near-date suggestion", () => {
+    const hints = new Map([
+      [5, { reason: "near_date_suggestion", candidates: [{ bookKind: "expense", bookId: 273, date: "2026-03-05", amount: 540, dateDiff: 1, suggested: true }] }],
+    ]);
+    const r = rowOf(line(5, { status: "review", txn_date: "2026-03-06", withdrawal: 540 }), hints);
+    assert.equal(r.result, "REVIEW");
+    assert.equal(r.reason, "near_date_suggestion");
+    assert.deepEqual(r.links, []);
+    assert.equal(r.suggestion.label, "EXP-00273");
+    assert.equal(r.suggestion.dateDiff, 1);
+  });
+
+  test("UNMATCHED: no links, no hint, no reason", () => {
+    const r = rowOf(line(6, { status: "unmatched", withdrawal: 777 }));
+    assert.equal(r.result, "UNMATCHED");
+    assert.equal(r.reason, null);
+    assert.equal(r.suggestion, null);
+  });
+
+  test("a transfer link shows its TRF code; ignored lines get result IGNORED", () => {
+    const t = rowOf(line(7, { txn_date: "2026-03-09", deposit: 25000, links: [link("transfer", 12)] }));
+    assert.equal(t.links[0].label, "TRF-00012");
+    assert.equal(t.result, "MATCH");
+    assert.equal(rowOf(line(8, { status: "ignored" })).result, "IGNORED");
+  });
+
+  test("reviewHints re-runs the matcher read-only and keeps only review lines", () => {
+    const lines = [
+      { id: 1, seq: 1, account: "HDFC", status: "review", txn_date: "2026-03-06", description: "", reference: "", withdrawal: 540, deposit: 0 },
+      { id: 2, seq: 2, account: "HDFC", status: "unmatched", txn_date: "2026-03-10", description: "", reference: "", withdrawal: 777, deposit: 0 },
+    ];
+    const hints = reviewHints(lines, lines, "HDFC", data);
+    assert.equal(hints.get(1).reason, "near_date_suggestion");
+    assert.equal(hints.has(2), false);
+  });
+
+  test("filter counts and row filtering", () => {
+    const rows = buildReconRows(
+      [
+        line(1, { deposit: 1800, links: [link("collection", 236)] }),
+        line(2, { txn_date: "2026-03-06", deposit: 2800, links: [link("collection", 245), link("collection", 243)] }),
+        line(3, { txn_date: "2026-03-06", withdrawal: 540, links: [link("expense", 273)] }),
+        line(4, { txn_date: "2026-03-07", deposit: 13500, links: [link("collection", 300)] }),
+        line(5, { status: "review", withdrawal: 1 }),
+        line(6, { status: "unmatched", withdrawal: 2 }),
+        line(7, { status: "ignored", withdrawal: 3 }),
+      ],
+      ledger
+    );
+    assert.deepEqual(reconFilterCounts(rows), {
+      all: 7, match: 1, group: 1, date_diff: 1, amount_diff: 1, review: 1, unmatched: 1, ignored: 1,
+    });
+    assert.equal(rows.filter((r) => reconRowMatchesFilter(r, "all")).length, 7);
+    assert.deepEqual(rows.filter((r) => reconRowMatchesFilter(r, "group")).map((r) => r.lineId), [2]);
+  });
+});
+
+describe("manual link popup helpers", () => {
+  const data = {
+    collections: [
+      { id: 1, account: "HDFC", date: "2026-03-05", amount: 1800, student_name: "Aboobeker" },
+      { id: 2, account: "HDFC", date: "2026-03-02", amount: 1800, student_name: "Sreeshma" },
+      { id: 3, account: "HDFC", date: "2026-03-05", amount: 800, student_name: "Mayiza", bank_reference: "UPI 712345678901" },
+      { id: 4, account: "ICICI", date: "2026-03-05", amount: 1800, student_name: "Other account" },
+      { id: 5, account: "HDFC", date: "2026-01-01", amount: 1800, student_name: "Far away" },
+    ],
+    expenses: [{ id: 9, account: "HDFC", date: "2026-03-05", amount: 1800, category: "Rent" }],
+    transfers: [
+      { id: 7, from_account: "Cash", to_account: "HDFC", date: "2026-03-05", amount: 500, purpose: "deposit" },
+      { id: 8, from_account: "HDFC", to_account: "Cash", date: "2026-03-05", amount: 600, purpose: "withdraw" },
+    ],
+  };
+  const crLine = { id: 1, txn_date: "2026-03-05", deposit: 1800, withdrawal: 0, description: "UPI/777/x", reference: "", account: "HDFC" };
+  const keys = (list) => list.map((c) => c.key);
+
+  test("candidates exclude already-linked entries, wrong-direction entries and other accounts", () => {
+    const list = linkCandidates(crLine, "HDFC", data, ["collection:2"], { showAllDates: true });
+    const k = keys(list);
+    assert.ok(!k.includes("collection:2")); // linked elsewhere
+    assert.ok(!k.includes("expense:9")); // DR entry for a CR line
+    assert.ok(!k.includes("transfer:8")); // transfer out
+    assert.ok(!k.includes("collection:4")); // other account
+    assert.ok(k.includes("transfer:7")); // transfer in
+    assert.ok(k.includes("collection:1") && k.includes("collection:3"));
+  });
+
+  test("a DR line is offered expenses and transfers out, never collections", () => {
+    const dr = { ...crLine, deposit: 0, withdrawal: 600 };
+    const k = keys(linkCandidates(dr, "HDFC", data, [], { showAllDates: true }));
+    assert.deepEqual(k.sort(), ["expense:9", "transfer:8"]);
+  });
+
+  test("ranking: same-amount nearest date first and tagged suggested; the rest by date proximity", () => {
+    const list = linkCandidates(crLine, "HDFC", data, [], { showAllDates: true });
+    assert.equal(list[0].key, "collection:1"); // same amount, same day
+    assert.equal(list[0].suggested, true);
+    assert.equal(list[0].label, "OKSY/000001");
+    assert.ok(list.findIndex((c) => c.key === "collection:5") > list.findIndex((c) => c.key === "collection:3"));
+  });
+
+  test("a UTR hit is suggested even when the amount differs; the date window hides far entries unless 'show all dates'", () => {
+    const withUtr = { ...crLine, description: "UPI/712345678901/x" };
+    const near = linkCandidates(withUtr, "HDFC", data, []);
+    assert.equal(near.find((c) => c.key === "collection:3").suggested, true);
+    assert.ok(!keys(near).includes("collection:5"));
+    assert.ok(keys(linkCandidates(withUtr, "HDFC", data, [], { showAllDates: true })).includes("collection:5"));
+  });
+
+  test("search matches Book ID, name, amount and date", () => {
+    const list = linkCandidates(crLine, "HDFC", data, [], { showAllDates: true });
+    assert.deepEqual(keys(filterLinkCandidates(list, "mayiza")), ["collection:3"]);
+    assert.ok(keys(filterLinkCandidates(list, "OKSY/000002")).includes("collection:2"));
+    assert.ok(keys(filterLinkCandidates(list, "1,800")).includes("collection:1"));
+    assert.ok(keys(filterLinkCandidates(list, "2026-03-02")).includes("collection:2"));
+  });
+
+  test("selection summary for one entry: exact, no confirmation needed", () => {
+    const sel = [{ date: "2026-03-05", amount: 1800 }];
+    assert.deepEqual(summarizeSelection(crLine, sel), {
+      count: 1, total: 1800, bankAmount: 1800, amountDiff: 0, dateDiff: 0, needsConfirm: false,
+    });
+  });
+
+  test("selection summary for three entries: amount diff is bank minus the sum, date diff is the largest gap", () => {
+    const sel = [
+      { date: "2026-03-05", amount: 1000 },
+      { date: "2026-03-04", amount: 500 },
+      { date: "2026-03-02", amount: 200.5 },
+    ];
+    const sum = summarizeSelection(crLine, sel);
+    assert.equal(sum.count, 3);
+    assert.equal(sum.total, 1700.5);
+    assert.equal(sum.amountDiff, 99.5);
+    assert.equal(sum.dateDiff, 3);
+    assert.equal(sum.needsConfirm, true);
+    assert.equal(summarizeSelection(crLine, []).needsConfirm, false);
+  });
+
+  test("manual link payload is all-or-nothing: every entry as source 'manual'; empty selection throws", () => {
+    const payload = buildManualLinkPayload(55, [
+      { kind: "collection", id: 1 },
+      { kind: "transfer", id: 7 },
+    ]);
+    assert.deepEqual(payload, {
+      lineId: 55,
+      links: [
+        { bookKind: "collection", bookId: 1, source: "manual" },
+        { bookKind: "transfer", bookId: 7, source: "manual" },
+      ],
+      source: "manual",
+      status: "matched",
+    });
+    assert.throws(() => buildManualLinkPayload(55, []));
+  });
+
+  test("book-only: only unlinked entries of the statement's account inside the period", () => {
+    const statement = { account: "HDFC", period_start: "2026-03-01", period_end: "2026-03-31" };
+    const lines = [
+      { id: 1, account: "HDFC", status: "matched", links: [{ bookKind: "collection", bookId: 1, source: "auto_exact" }] },
+      { id: 2, account: "HDFC", status: "matched", match_kind: "collection", match_id: 2, links: [] }, // legacy fallback still counts
+    ];
+    const out = bookOnlyEntries(statement, lines, data);
+    const k = keys(out);
+    assert.ok(!k.includes("collection:1") && !k.includes("collection:2")); // linked
+    assert.ok(!k.includes("collection:4")); // other account
+    assert.ok(!k.includes("collection:5")); // outside the period
+    assert.deepEqual(k.sort(), ["collection:3", "expense:9", "transfer:7", "transfer:8"]);
+    assert.equal(out.find((e) => e.key === "expense:9").direction, "DR");
+  });
+
+  test("linkedKeys reads every link of a line", () => {
+    const lines = [
+      { account: "HDFC", status: "matched", links: [{ bookKind: "collection", bookId: 1 }, { bookKind: "collection", bookId: 3 }] },
+    ];
+    assert.deepEqual(linkedKeys(lines, "HDFC").sort(), ["collection:1", "collection:3"]);
+  });
+});
+
+describe("phase 4 fixes", () => {
+  test("book-only treats an entry linked from ANOTHER statement as linked; a transfer linked on another account is still book-only here", () => {
     const data = {
-      transfers: [{ id: 1, date: "2026-01-05", from_account: "HDFC", to_account: "Cash", amount: 200 }],
+      collections: [
+        { id: 1, account: "HDFC", date: "2026-03-05", amount: 100, student_name: "A" },
+        { id: 2, account: "HDFC", date: "2026-03-06", amount: 200, student_name: "B" },
+      ],
+      expenses: [],
+      transfers: [{ id: 7, from_account: "Cash", to_account: "HDFC", date: "2026-03-07", amount: 500 }],
     };
-    const detail = matchedRecordDetail(line, data);
-    assert.ok(!detail.rows.some((r) => r.k === "Bank reference"));
+    const statement = { id: 10, account: "HDFC", period_start: "2026-03-01", period_end: "2026-03-31" };
+    const otherStatementLine = { id: 50, statement_id: 11, account: "HDFC", status: "matched", links: [{ bookKind: "collection", bookId: 1 }] };
+    const otherAccountLine = { id: 60, statement_id: 12, account: "ICICI", status: "matched", links: [{ bookKind: "transfer", bookId: 7 }] };
+    const out = bookOnlyEntries(statement, [otherStatementLine, otherAccountLine], data).map((e) => e.key);
+    assert.deepEqual(out, ["collection:2", "transfer:7"]);
+    // the link popup for HDFC excludes the same entries; for ICICI the transfer is taken
+    assert.deepEqual(linkedKeys([otherStatementLine, otherAccountLine], "HDFC").sort(), ["collection:1"]);
+    assert.deepEqual(linkedKeys([otherStatementLine, otherAccountLine], "ICICI").sort(), ["collection:1", "transfer:7"]);
+  });
+});
+
+describe("Sync to books — preview and payload", () => {
+  const data = {
+    collections: [
+      { id: 1, account: "HDFC", date: "2026-03-05", amount: 1800, student_name: "A" }, // empty reference, same date
+      { id: 2, account: "HDFC", date: "2026-03-04", amount: 1500, student_name: "B", bank_reference: "OLD NOTE" }, // conflict + date diff
+      { id: 3, account: "HDFC", date: "2026-02-28", amount: 900, student_name: "C" }, // month change
+      { id: 4, account: "HDFC", date: "2025-12-31", amount: 700, student_name: "D" }, // year change
+      { id: 5, account: "HDFC", date: "2026-03-06", amount: 2000, student_name: "E" }, // group member
+      { id: 6, account: "HDFC", date: "2026-03-06", amount: 800, student_name: "F", bank_reference: "NEFT group" }, // group member, same text
+      { id: 7, account: "HDFC", date: "2026-03-06", amount: 1000, student_name: "G" }, // amount diff line
+    ],
+    expenses: [],
+    transfers: [],
+  };
+  const ledger = ledgerByKeyOf(data);
+  const L = (id, date, description, deposit, status, links, extra = {}) => ({
+    id, seq: id, account: "HDFC", txn_date: date, description, reference: "", deposit, withdrawal: 0, status, links, ...extra,
+  });
+  const lk = (bookId) => ({ bookKind: "collection", bookId, source: "manual" });
+  const lines = [
+    L(1, "2026-03-05", "UPI/111/aaa", 1800, "matched", [lk(1)]),
+    L(2, "2026-03-05", "UPI/222/bbb", 1500, "matched", [lk(2)]),
+    L(3, "2026-03-02", "UPI/333/ccc", 900, "matched", [lk(3)]),
+    L(4, "2026-01-02", "UPI/444/ddd", 700, "matched", [lk(4)]),
+    L(5, "2026-03-06", "NEFT group", 2800, "matched", [lk(5), lk(6)]),
+    L(6, "2026-03-06", "UPI/777/ggg", 1200, "matched", [lk(7)]), // 1,200 vs 1,000 -> AMOUNT_DIFF
+    L(7, "2026-03-06", "UPI/888/hhh", 50, "review", []),
+    L(8, "2026-03-06", "UPI/999/iii", 60, "unmatched", []),
+    L(9, "2026-03-06", "UPI/000/jjj", 70, "ignored", []),
+  ];
+  const rows = buildReconRows(lines, ledger);
+  const preview = buildSyncPreview(rows, ledger);
+  const item = (key) => preview.items.find((i) => i.key === key);
+
+  test("reference: fill when empty, conflict when different, same when identical", () => {
+    assert.equal(item("collection:1").reference.status, "fill");
+    assert.equal(item("collection:1").reference.next, bankReferenceText(lines[0]));
+    assert.equal(item("collection:2").reference.status, "conflict");
+    assert.equal(item("collection:2").reference.current, "OLD NOTE");
+    assert.equal(item("collection:6").reference.status, "same");
+  });
+
+  test("the new text is exactly what the Classify flow writes (description + reference, max 500)", () => {
+    assert.equal(bankReferenceText({ description: "UPI/1", reference: "R9" }), "UPI/1 R9");
+    assert.equal(bankReferenceText({ description: "x".repeat(600), reference: "" }).length, 500);
+  });
+
+  test("date: only when the book date differs; month and year changes are flagged", () => {
+    assert.equal(item("collection:1").date, null);
+    assert.deepEqual(item("collection:2").date, { from: "2026-03-04", to: "2026-03-05", monthChanges: false, blocked: false });
+    assert.equal(item("collection:3").date.monthChanges, true); // 28 Feb -> 2 Mar
+    assert.equal(item("collection:4").date.monthChanges, true); // 31 Dec 2025 -> 2 Jan 2026
+  });
+
+  test("a group produces one item per linked entry, both getting the full line text", () => {
+    assert.equal(item("collection:5").reference.next, "NEFT group");
+    assert.equal(item("collection:6").reference.next, "NEFT group");
+  });
+
+  test("AMOUNT_DIFF, REVIEW, UNMATCHED and IGNORED lines are excluded and counted by reason", () => {
+    assert.equal(item("collection:7"), undefined);
+    assert.deepEqual(preview.skippedByReason, { "amount diff": 1, review: 1, unmatched: 1, ignored: 1 });
+    assert.equal(preview.totals.eligible, 5);
+    assert.equal(preview.totals.skipped, 4);
+  });
+
+  test("totals: fills, conflicts, date changes and month changes", () => {
+    assert.deepEqual(
+      [preview.totals.fills, preview.totals.conflicts, preview.totals.dateChanges, preview.totals.monthChanges],
+      [4, 1, 3, 2]
+    );
+  });
+
+  test("defaults: fills ticked, conflicts and dates unticked; payload carries expected_old and no overwrite for fills", () => {
+    const sel = defaultSyncSelection(preview);
+    assert.equal(sel.refKeys.has("collection:2"), false);
+    const payload = buildSyncPayload(preview, sel);
+    assert.ok(payload.every((p) => p.field === "bank_reference" && p.overwrite === false));
+    const fill = payload.find((p) => p.book_id === 1);
+    assert.deepEqual(fill, {
+      line_id: 1, book_kind: "collection", book_id: 1, field: "bank_reference", new_value: "UPI/111/aaa", expected_old: "", overwrite: false,
+    });
+    assert.ok(!payload.some((p) => p.book_id === 2)); // conflict not ticked -> not included
+  });
+
+  test("a ticked conflict is included with overwrite true and the old value as expected_old", () => {
+    const sel = defaultSyncSelection(preview);
+    sel.refKeys.add("collection:2");
+    const p = buildSyncPayload(preview, sel).find((x) => x.book_id === 2);
+    assert.deepEqual(p, {
+      line_id: 2, book_kind: "collection", book_id: 2, field: "bank_reference", new_value: "UPI/222/bbb", expected_old: "OLD NOTE", overwrite: true,
+    });
+  });
+
+  test("master date checkbox ticks date changes but never month changes; month rows need their own tick", () => {
+    const sel = setMasterDate(preview, defaultSyncSelection(preview), true);
+    assert.equal(sel.dateKeys.has("collection:2"), true);
+    assert.equal(sel.dateKeys.has("collection:3"), false);
+    assert.equal(sel.dateKeys.has("collection:4"), false);
+    const datePayload = buildSyncPayload(preview, sel).filter((p) => p.field === "date");
+    assert.deepEqual(datePayload.map((p) => p.book_id), [2]);
+    assert.deepEqual(datePayload[0], {
+      line_id: 2, book_kind: "collection", book_id: 2, field: "date", new_value: "2026-03-05", expected_old: "2026-03-04", overwrite: false,
+    });
+    sel.dateKeys.add("collection:3");
+    assert.ok(buildSyncPayload(preview, sel).some((p) => p.field === "date" && p.book_id === 3));
+    assert.equal(setMasterDate(preview, sel, false).dateKeys.size, 0);
+  });
+
+  test("select all ticks fills and plain date changes but leaves conflicts and month changes unticked", () => {
+    const all = selectAllSync(preview, true);
+    assert.equal(all.refKeys.has("collection:2"), false); // conflict
+    assert.equal(all.dateKeys.has("collection:3"), false); // month change
+    assert.equal(all.dateKeys.has("collection:4"), false); // year change
+    assert.equal(all.dateKeys.has("collection:2"), true); // same-month date fix
+    const payload = buildSyncPayload(preview, all);
+    assert.equal(payload.length, 4 + 1); // four fills + one same-month date
+    assert.ok(!payload.some((p) => p.overwrite));
+    assert.equal(buildSyncPayload(preview, selectAllSync(preview, false)).length, 0);
+  });
+
+  test("every payload item carries the bank line it was previewed against", () => {
+    const sel = selectAllSync(preview, true);
+    sel.refKeys.add("collection:2");
+    buildSyncPayload(preview, sel).forEach((p) => {
+      const line = lines.find((l) => l.links.some((k) => k.bookId === p.book_id));
+      assert.equal(p.line_id, line.id);
+    });
+  });
+
+  test("sync runs are grouped by run id with change counts and undone state", () => {
+    const runs = groupSyncRuns([
+      { run_id: "a", synced_at: "2026-03-01T10:00:00Z", synced_by: "u1", undone_at: null },
+      { run_id: "a", synced_at: "2026-03-01T10:00:00Z", synced_by: "u1", undone_at: null },
+      { run_id: "b", synced_at: "2026-03-02T10:00:00Z", synced_by: "u1", undone_at: "2026-03-02T11:00:00Z" },
+    ]);
+    assert.deepEqual(runs.map((r) => [r.runId, r.changes, r.isUndone]), [["b", 1, true], ["a", 2, false]]);
+  });
+});
+
+describe("inter-bank transfers: one link per account", () => {
+  const data = {
+    collections: [],
+    expenses: [],
+    transfers: [{ id: 7, from_account: "ICICI", to_account: "HDFC", date: "2026-03-05", amount: 25000, purpose: "fund move" }],
+  };
+  const iciciLine = {
+    id: 1, seq: 1, account: "ICICI", statement_id: 1, status: "matched", txn_date: "2026-03-05",
+    description: "TRF TO HDFC", reference: "", deposit: 0, withdrawal: 25000,
+    links: [{ bookKind: "transfer", bookId: 7, source: "manual" }],
+  };
+  const hdfcLine = {
+    id: 2, seq: 1, account: "HDFC", statement_id: 2, status: "unmatched", txn_date: "2026-03-05",
+    description: "TRF FROM ICICI", reference: "", deposit: 25000, withdrawal: 0, links: [],
+  };
+  const all = [iciciLine, hdfcLine];
+
+  test("a transfer linked on the ICICI side is still a link candidate on the HDFC side", () => {
+    const keys = linkCandidates(hdfcLine, "HDFC", data, linkedKeys(all, "HDFC")).map((c) => c.key);
+    assert.deepEqual(keys, ["transfer:7"]);
+    // ...but not offered again on ICICI
+    const iciciOpen = { ...hdfcLine, account: "ICICI", deposit: 0, withdrawal: 25000 };
+    assert.deepEqual(linkCandidates(iciciOpen, "ICICI", data, linkedKeys(all, "ICICI")), []);
+  });
+
+  test("the HDFC re-run can auto-match it (exact date + amount)", () => {
+    const plan = planRerun([hdfcLine], all, "HDFC", data);
+    assert.equal(plan[0].new_status, "matched");
+    assert.deepEqual(plan[0].links, [{ bookKind: "transfer", bookId: 7, source: "auto_exact" }]);
+  });
+
+  test("book-only on HDFC lists it while unlinked there, and drops it once both sides are linked", () => {
+    const hdfcStatement = { account: "HDFC", period_start: "2026-03-01", period_end: "2026-03-31" };
+    assert.deepEqual(bookOnlyEntries(hdfcStatement, all, data).map((e) => e.key), ["transfer:7"]);
+    const linkedBoth = [iciciLine, { ...hdfcLine, status: "matched", links: [{ bookKind: "transfer", bookId: 7, source: "manual" }] }];
+    assert.deepEqual(bookOnlyEntries(hdfcStatement, linkedBoth, data), []);
+  });
+
+  test("a transfer linked on two accounts gets a blocked date change and never enters the payload", () => {
+    const both = [
+      { ...iciciLine, txn_date: "2026-03-06" },
+      { ...hdfcLine, txn_date: "2026-03-06", status: "matched", links: [{ bookKind: "transfer", bookId: 7, source: "manual" }] },
+    ];
+    const multi = multiAccountTransferKeys(both);
+    assert.deepEqual([...multi], ["transfer:7"]);
+    const ledger = ledgerByKeyOf(data);
+    const rows = buildReconRows([both[1]], ledger);
+    const preview = buildSyncPreview(rows, ledger, { multiAccountKeys: multi });
+    const item = preview.items[0];
+    assert.equal(item.date.blocked, true);
+    assert.equal(preview.totals.blockedDates, 1);
+    assert.equal(preview.totals.dateChanges, 0);
+    const sel = selectAllSync(preview, true);
+    sel.dateKeys.add(item.key); // even a forced tick is ignored
+    assert.ok(!buildSyncPayload(preview, sel).some((p) => p.field === "date"));
   });
 });

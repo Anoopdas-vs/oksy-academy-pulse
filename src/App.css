@@ -840,54 +840,6 @@ tbody tr:hover {
   color: white;
 }
 
-/* Reconciliation: hover a matched status tag to see the linked transaction. */
-.match-tag {
-  cursor: help;
-}
-
-.match-tip {
-  position: fixed;
-  z-index: 3000;
-  min-width: 230px;
-  max-width: 320px;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 10px 12px;
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  box-shadow: 0 10px 30px rgba(20, 22, 40, 0.18);
-  font-size: 11px;
-  color: var(--text);
-  pointer-events: none;
-}
-
-.match-tip-title {
-  font-weight: 700;
-  font-size: 11px;
-  margin-bottom: 4px;
-  padding-bottom: 4px;
-  border-bottom: 1px solid var(--border);
-}
-
-.match-tip-row {
-  display: flex;
-  justify-content: space-between;
-  gap: 14px;
-  line-height: 1.5;
-}
-
-.match-tip-k {
-  color: var(--muted);
-  white-space: nowrap;
-}
-
-.match-tip-v {
-  font-weight: 600;
-  text-align: right;
-}
-
 tfoot td {
   background: var(--purple-pale);
   border-top: 2px solid var(--border);
@@ -1714,10 +1666,6 @@ tfoot td {
   color: var(--muted);
 }
 
-.row-open td {
-  background: var(--danger-bg);
-}
-
 .row-actions {
   display: flex;
   gap: 6px;
@@ -1732,17 +1680,6 @@ tfoot td {
 .mini-tag.warn {
   background: var(--danger-bg);
   color: var(--danger);
-}
-
-.classify-summary {
-  grid-column: 1 / -1;
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  background: var(--purple-pale);
-  border-radius: 8px;
-  padding: 10px 12px;
-  margin-bottom: 6px;
 }
 
 /* =========================
@@ -2910,3 +2847,290 @@ tfoot td {
   letter-spacing: inherit;
 }
 .th-sort:focus-visible { outline: 2px solid var(--accent, #2563eb); outline-offset: 2px; }
+
+/* Reconciliation review table (Phase 3). Tokens reuse :root; the two badge
+   colours without a token (yellow, orange) are local to these classes. */
+.recon-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 18px 10px;
+}
+
+.recon-chip {
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 11px;
+}
+
+.recon-chip b {
+  margin-left: 3px;
+  color: var(--muted);
+}
+
+.recon-chip.active {
+  background: var(--purple);
+  border-color: var(--purple);
+  color: white;
+}
+
+.recon-chip.active b {
+  color: white;
+}
+
+.recon-grid {
+  min-width: 1080px;
+}
+
+.recon-grid td {
+  vertical-align: top;
+}
+
+.recon-desc {
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recon-num {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.recon-empty {
+  text-align: center;
+  color: var(--muted);
+  padding: 16px;
+}
+
+.recon-reason {
+  margin-top: 3px;
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.recon-src {
+  margin-left: 4px;
+}
+
+.recon-kind {
+  font-size: 8px;
+  padding: 2px 5px;
+  vertical-align: middle;
+}
+
+.recon-book {
+  white-space: nowrap;
+}
+
+.recon-suggest {
+  color: var(--muted);
+  font-style: italic;
+  opacity: 0.8;
+}
+
+.recon-diff {
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.recon-diff.warn-date {
+  background: #fef9c3;
+  color: #854d0e;
+}
+
+.recon-diff.warn-amount {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+.rbadge {
+  display: inline-block;
+  padding: 3px 8px;
+  border-radius: 5px;
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.rbadge.match {
+  background: var(--positive-bg);
+  color: var(--positive);
+}
+
+.rbadge.group {
+  background: color-mix(in srgb, var(--accent-blue) 14%, white);
+  color: var(--accent-blue);
+}
+
+.rbadge.date_diff {
+  background: #fef9c3;
+  color: #854d0e;
+}
+
+.rbadge.amount_diff {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+.rbadge.review {
+  background: #ffedd5;
+  color: #c2410c;
+}
+
+.rbadge.unmatched {
+  background: transparent;
+  border: 1px solid var(--danger);
+  color: var(--danger);
+}
+
+.rbadge.ignored {
+  background: var(--track);
+  color: var(--muted);
+}
+
+/* New-view rows that need attention use a neutral tint, not the red row-open. */
+.recon-grid tr.recon-attn td {
+  background: var(--purple-pale);
+}
+
+.recon-bookonly-note {
+  margin: 0 18px 10px;
+}
+
+/* Link entry popup */
+.link-toolbar {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  margin: 10px 0;
+}
+
+.link-toolbar input[type="search"] {
+  flex: 1;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.link-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.link-list {
+  max-height: 280px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.link-picked td {
+  background: var(--purple-pale);
+}
+
+.field-hint {
+  margin-top: 3px;
+  font-size: 10px;
+  color: var(--muted);
+}
+
+/* Sync to books */
+.sync-note {
+  margin: 0 0 8px;
+}
+
+.sync-done {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.sync-cell {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.sync-conflict td {
+  background: #fef9c3;
+}
+
+.sync-month {
+  margin-left: 6px;
+}
+
+/* Match popup and the other reconciliation popups: real padding, a footer of
+   its own, buttons on the right. */
+.modal.modal-lg {
+  width: min(720px, 100%);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.modal-lg > form.match-form {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+}
+
+.modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 20px 24px;
+  overflow: auto;
+  min-height: 0;
+}
+
+.modal-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 16px 24px;
+  border-top: 1px solid var(--border);
+}
+
+.modal-summary {
+  margin-right: auto;
+  font-size: 12px;
+}
+
+.match-head {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 16px 24px 0;
+}
+
+.match-desc {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.match-head .subtab-switch {
+  align-self: flex-start;
+  margin-top: 6px;
+}
+
+.modal-link {
+  margin-right: auto;
+  font-size: 12px;
+}

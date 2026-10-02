@@ -1,4 +1,5 @@
 import { supabase } from "./supabaseClient.js";
+import { groupSyncRuns, isLinkConflict, LINK_CONFLICT_MESSAGE } from "./reconcile.js";
 
 // -------- Students --------
 
@@ -391,6 +392,106 @@ export async function updateBankStatementLine(id, patch) {
     .update(patch)
     .eq("id", id);
   if (error) throw error;
+}
+
+// Same as updateBankStatementLine, but the row is only updated while it is
+// still 'review' or 'unmatched' -- the database-side guard behind "Re-run
+// auto-match", so a line someone matched in the meantime is never overridden.
+// Resolves to true if the row was updated, false if it was skipped.
+export async function updateBankStatementLineIfOpen(id, patch) {
+  const { data, error } = await supabase
+    .from("bank_statement_lines")
+    .update(patch)
+    .eq("id", id)
+    .in("status", ["review", "unmatched"])
+    .select("id");
+  if (error) throw error;
+  return (data || []).length > 0;
+}
+
+// -------- Bank match links (bank_match_links, migration 32) --------
+// One bank line -> many book entries; a book entry -> only one bank line.
+// During rollout every write is mirrored into bank_statement_lines
+// (status + match_kind/match_id = first link) so the older page logic keeps
+// working. Reads prefer the link rows (see attachLinks in reconcile.js).
+
+// Links for one statement, or for every statement when `statementId` is null.
+export async function fetchMatchLinks(statementId = null) {
+  let query = supabase
+    .from("bank_match_links")
+    .select("id, line_id, book_kind, book_id, source, bank_statement_lines!inner(statement_id)");
+  if (statementId != null) query = query.eq("bank_statement_lines.statement_id", statementId);
+  const { data, error } = await query;
+  if (error) throw error;
+  return (data || []).map(({ bank_statement_lines: _join, ...row }) => row);
+}
+
+// id + seq of a statement's stored lines, to pair upload results with ids.
+export async function fetchStatementLineIds(statementId) {
+  const { data, error } = await supabase
+    .from("bank_statement_lines")
+    .select("id, seq")
+    .eq("statement_id", statementId);
+  if (error) throw error;
+  return data || [];
+}
+
+// Replace the links of one line with `links` ([{ bookKind, bookId, source? }])
+// in ONE database transaction (RPC, migration 34), which also mirrors the
+// first link into the line and stamps matched_at / matched_by (auth.uid()).
+// `status` is 'matched' for matches and 'classified' for lines that created
+// their own record. `userId` is accepted for older callers and ignored.
+export async function saveMatchLinks(lineId, links, source = "manual", { status = "matched" } = {}) {
+  const { error } = await supabase.rpc("save_bank_match_links", {
+    p_line_id: lineId,
+    p_links: links.map((k) => ({ book_kind: k.bookKind, book_id: k.bookId, source: k.source || source })),
+    p_source: source,
+    p_status: status,
+  });
+  if (error) throw isLinkConflict(error) ? new Error(LINK_CONFLICT_MESSAGE) : error;
+}
+
+// Remove every link of a line and clear the mirrored columns (RPC). `status`
+// is the line's new status ('unmatched' for Unmatch, 'ignored' for Ignore).
+export async function removeMatchLinks(lineId, { status = "unmatched" } = {}) {
+  const { error } = await supabase.rpc("remove_bank_match_links", { p_line_id: lineId, p_status: status });
+  if (error) throw error;
+}
+
+// -------- Bank sync (migration 35) --------
+// Writes bank_reference / date onto book entries inside ONE database
+// transaction. `items` come from buildSyncPayload(); returns rows changed.
+export async function syncBankEntries(runId, items) {
+  const { data, error } = await supabase.rpc("sync_bank_entries", { p_run_id: runId, p_items: items });
+  if (error) throw error;
+  return Number(data) || 0;
+}
+
+// Undo one run. Resolves to { restored, skipped }.
+export async function undoBankSync(runId) {
+  const { data, error } = await supabase.rpc("undo_bank_sync", { p_run_id: runId });
+  if (error) throw error;
+  return { restored: Number(data?.restored) || 0, skipped: Number(data?.skipped) || 0 };
+}
+
+// Recent sync runs, newest first: [{ runId, syncedAt, syncedBy, syncedByName,
+// changes, undone, isUndone }]. Grouped from bank_sync_history.
+export async function fetchSyncRuns(limit = 20) {
+  const { data, error } = await supabase
+    .from("bank_sync_history")
+    .select("run_id, synced_at, synced_by, undone_at")
+    .order("synced_at", { ascending: false })
+    .limit(1000);
+  if (error) throw error;
+  const runs = groupSyncRuns(data || []).slice(0, limit);
+  // Best effort: show who ran it. Names are optional, so a failure is ignored.
+  const ids = [...new Set(runs.map((r) => r.syncedBy).filter(Boolean))];
+  let names = new Map();
+  if (ids.length) {
+    const { data: people } = await supabase.from("profiles").select("id, full_name, email").in("id", ids);
+    names = new Map((people || []).map((p) => [p.id, p.full_name || p.email]));
+  }
+  return runs.map((r) => ({ ...r, syncedByName: names.get(r.syncedBy) || "" }));
 }
 
 export async function deleteBankStatement(id) {

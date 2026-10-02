@@ -17,7 +17,7 @@ import {
   studentFeeTotals,
 } from "./lib/fees.js";
 import { parseBankStatement } from "./lib/bankStatement.js";
-import { autoMatch } from "./lib/reconcile.js";
+import { attachLinks, bankReferenceText, buildManualLinkPayload, linksToLinePatch, matchStatementLines } from "./lib/reconcile.js";
 import { getAccess } from "./lib/access.js";
 import {
   fetchStudents,
@@ -41,8 +41,16 @@ import {
   deleteTransfer,
   fetchBankStatements,
   fetchBankStatementLines,
+  fetchMatchLinks,
+  fetchStatementLineIds,
+  saveMatchLinks,
+  removeMatchLinks,
+  syncBankEntries,
+  undoBankSync,
+  fetchSyncRuns,
   createBankStatement,
   updateBankStatementLine,
+  updateBankStatementLineIfOpen,
   deleteBankStatement,
   fetchBatches,
   insertBatch,
@@ -68,6 +76,8 @@ import {
   isPositiveNumber,
   isValidStatus,
   validateMoneyRow,
+  validateBankReference,
+  normalizeBankReference,
   validateStudentPersonal,
   preparePersonalFields,
   STUDENT_PERSONAL_FIELDS,
@@ -77,11 +87,11 @@ import Dashboard from "./pages/Dashboard.jsx";
 import EnrollmentPage from "./pages/EnrollmentPage.jsx";
 import FeeCollectionPage from "./pages/FeeCollectionPage.jsx";
 import ExpensesPage from "./pages/ExpensesPage.jsx";
-import BankingPage from "./pages/BankingPage.jsx";
 import ReportsPage from "./pages/ReportsPage.jsx";
 import AdminPage from "./pages/AdminPage.jsx";
 // Academy Suite pages are code-split — they're never the landing tab and
 // pull their own data layer.
+const BankingPage = React.lazy(() => import("./pages/BankingPage.jsx"));
 const TimetablePage = React.lazy(() => import("./pages/TimetablePage.jsx"));
 const LiveClassPage = React.lazy(() => import("./pages/LiveClassPage.jsx"));
 const AssignmentsPage = React.lazy(() => import("./pages/AssignmentsPage.jsx"));
@@ -350,6 +360,7 @@ function AppShell() {
     account: "HDFC",
     amount: "",
     reference: "",
+    bank_reference: "",
   };
   const [collectionForm, setCollectionForm] = useState(emptyCollectionForm);
 
@@ -422,12 +433,13 @@ function AppShell() {
       return;
     }
     try {
-      const [statementRows, lineRows] = await Promise.all([
+      const [statementRows, lineRows, linkRows] = await Promise.all([
         fetchBankStatements(),
         fetchBankStatementLines(),
+        fetchMatchLinks(),
       ]);
       setBankStatements(statementRows);
-      setBankLines(lineRows);
+      setBankLines(attachLinks(lineRows, linkRows));
       bankLoadedRef.current = true;
     } catch (err) {
       setDataError(friendlyError(err));
@@ -659,6 +671,11 @@ function AppShell() {
       setCollectionFormError("Amount must be greater than zero.");
       return;
     }
+    const bankRefProblem = validateBankReference(collectionForm.bank_reference);
+    if (bankRefProblem) {
+      setCollectionFormError(bankRefProblem);
+      return;
+    }
 
     setSavingCollection(true);
     try {
@@ -672,6 +689,7 @@ function AppShell() {
           account: collectionForm.account,
           amount,
           reference: collectionForm.reference,
+          bank_reference: normalizeBankReference(collectionForm.bank_reference),
         },
         profile.id
       );
@@ -837,13 +855,6 @@ function AppShell() {
 
   /* ---------------- Bank reconciliation ---------------- */
 
-  // Full bank statement text to copy onto a matched fee collection's
-  // bank_reference field -- description plus any separate reference/UTR
-  // column, so staff can audit the collection against the statement
-  // without reopening the reconciliation screen.
-  const bankReferenceText = (line) =>
-    [line.description, line.reference].filter(Boolean).join(" ").trim().slice(0, 500);
-
   // Parse an uploaded statement, auto-match its lines against existing
   // collections / expenses / transfers, and store it.
   const uploadBankStatement = async (account, file) => {
@@ -852,7 +863,7 @@ function AppShell() {
     try {
       const buffer = await file.arrayBuffer();
       const parsed = await parseBankStatement(buffer);
-      const matches = autoMatch(parsed.lines, account, { collections, expenses, transfers });
+      const matches = matchStatementLines(parsed.lines, account, { collections, expenses, transfers });
 
       const lineRows = parsed.lines.map((ln, i) => ({
         seq: ln.seq,
@@ -863,14 +874,15 @@ function AppShell() {
         deposit: ln.deposit,
         running_balance: ln.runningBalance,
         status: matches[i].status,
-        match_kind: matches[i].match_kind || null,
-        match_id: matches[i].match_id || null,
-        match_score: matches[i].match_score ?? null,
+        // Dual-write: the first link mirrors into the legacy columns.
+        match_kind: matches[i].links[0]?.bookKind || null,
+        match_id: matches[i].links[0]?.bookId ?? null,
+        match_score: null,
         matched_at: matches[i].status === "matched" ? new Date().toISOString() : null,
         matched_by: matches[i].status === "matched" ? profile.id : null,
       }));
 
-      await createBankStatement(
+      const statementId = await createBankStatement(
         {
           account,
           period_start: parsed.periodStart,
@@ -883,32 +895,85 @@ function AppShell() {
         profile.id
       );
 
-      // Auto-matched collections/expenses/transfers get the full bank line
-      // description/reference written onto them as a permanent audit trail
-      // (see the "Fix Bank Reconciliation Matching Logic" brief) -- same as
-      // a manual match/classification does below.
+      // Store the links (a line may link to several entries) against the ids
+      // the database just assigned, paired by statement sequence.
+      const idBySeq = new Map((await fetchStatementLineIds(statementId)).map((r) => [r.seq, r.id]));
       const matchedLines = parsed.lines
         .map((ln, i) => ({ ln, m: matches[i] }))
         .filter(({ m }) => m.status === "matched");
-      const bankRefUpdaters = {
-        collection: (id, patch) => updateCollection(id, patch),
-        expense: (id, patch) => updateExpense(id, patch, profile.id),
-        transfer: (id, patch) => updateTransfer(id, patch),
-      };
-      const bankRefWrites = matchedLines.filter(({ m }) => bankRefUpdaters[m.match_kind]);
-      if (bankRefWrites.length) {
-        await Promise.all(
-          bankRefWrites.map(({ ln, m }) =>
-            bankRefUpdaters[m.match_kind](m.match_id, {
-              bank_reference: bankReferenceText(ln),
-            })
-          )
-        );
+      for (const { ln, m } of matchedLines) {
+        await saveMatchLinks(idBySeq.get(ln.seq), m.links, "auto_exact", { userId: profile.id });
       }
+
+      // Linking never edits an entry's bank_reference or date; only
+      // "Sync to books" does (preview, history, undo).
 
       await Promise.all([loadData(), loadBankData()]);
     } catch (err) {
       setDataError(friendlyError(err));
+    } finally {
+      setBankBusy(false);
+    }
+  };
+
+  // Apply a confirmed "Re-run auto-match" plan (see planRerun). Each line is
+  // updated only while it is still review/unmatched, so nothing already
+  // matched, classified or ignored can be overridden.
+  const applyBankRerun = async (changes) => {
+    setBankBusy(true);
+    setDataError("");
+    try {
+      for (const c of changes) {
+        const matched = c.new_status === "matched";
+        const patch = matched
+          ? linksToLinePatch(c.links, { userId: profile.id })
+          : { status: c.new_status, match_kind: null, match_id: null, match_score: null };
+        const applied = await updateBankStatementLineIfOpen(c.line.id, patch);
+        if (applied && matched) {
+          await saveMatchLinks(c.line.id, c.links, "auto_exact", { userId: profile.id });
+        }
+      }
+      await Promise.all([loadData(), loadBankData()]);
+    } catch (err) {
+      setDataError(friendlyError(err));
+    } finally {
+      setBankBusy(false);
+    }
+  };
+
+  // Link one bank line to the book entries picked in the Match popup, in one
+  // atomic save. Errors propagate so the popup can show them.
+  const linkBankLine = async (line, entries) => {
+    setBankBusy(true);
+    try {
+      const payload = buildManualLinkPayload(line.id, entries);
+      await saveMatchLinks(payload.lineId, payload.links, payload.source, { status: payload.status });
+      await Promise.all([loadData(), loadBankData()]);
+    } finally {
+      setBankBusy(false);
+    }
+  };
+
+  // Sync to books: apply the ticked reference / date changes in one atomic
+  // call, then reload books and lines. Errors propagate to the modal.
+  const runBankSync = async (items) => {
+    setBankBusy(true);
+    try {
+      const runId = crypto.randomUUID();
+      const changed = await syncBankEntries(runId, items);
+      await Promise.all([loadData(), loadBankData()]);
+      return { runId, changed };
+    } finally {
+      setBankBusy(false);
+    }
+  };
+
+  const undoSyncRun = async (runId) => {
+    setBankBusy(true);
+    try {
+      const result = await undoBankSync(runId);
+      await Promise.all([loadData(), loadBankData()]);
+      return result;
     } finally {
       setBankBusy(false);
     }
@@ -922,26 +987,6 @@ function AppShell() {
     try {
       const amount = Number(line.deposit) > 0 ? Number(line.deposit) : Number(line.withdrawal);
       let created;
-
-      // Link to a record that already exists (no new record created).
-      if (input.kind === "link") {
-        if (input.linkKind === "collection") {
-          await updateCollection(input.linkId, { bank_reference: bankReferenceText(line) });
-        } else if (input.linkKind === "expense") {
-          await updateExpense(input.linkId, { bank_reference: bankReferenceText(line) }, profile.id);
-        } else if (input.linkKind === "transfer") {
-          await updateTransfer(input.linkId, { bank_reference: bankReferenceText(line) });
-        }
-        await updateBankStatementLine(line.id, {
-          status: "matched",
-          match_kind: input.linkKind,
-          match_id: input.linkId,
-          matched_at: new Date().toISOString(),
-          matched_by: profile.id,
-        });
-        await Promise.all([loadData(), loadBankData()]);
-        return;
-      }
 
       if (input.kind === "collection") {
         const student = students.find(
@@ -997,13 +1042,20 @@ function AppShell() {
         throw new Error("Unknown classification.");
       }
 
-      await updateBankStatementLine(line.id, {
-        status: "classified",
-        match_kind: input.kind,
-        match_id: created ? created.id : null,
-        matched_at: new Date().toISOString(),
-        matched_by: profile.id,
-      });
+      if (created) {
+        await saveMatchLinks(line.id, [{ bookKind: input.kind, bookId: created.id }], "manual", {
+          status: "classified",
+          userId: profile.id,
+        });
+      } else {
+        await updateBankStatementLine(line.id, {
+          status: "classified",
+          match_kind: input.kind,
+          match_id: null,
+          matched_at: new Date().toISOString(),
+          matched_by: profile.id,
+        });
+      }
       await Promise.all([loadData(), loadBankData()]);
     } catch (err) {
       setDataError(friendlyError(err));
@@ -1016,11 +1068,7 @@ function AppShell() {
   const setBankLineIgnored = async (line, ignored) => {
     setBankBusy(true);
     try {
-      await updateBankStatementLine(line.id, {
-        status: ignored ? "ignored" : "unmatched",
-        match_kind: null,
-        match_id: null,
-      });
+      await removeMatchLinks(line.id, { status: ignored ? "ignored" : "unmatched" });
       await Promise.all([loadData(), loadBankData()]);
     } catch (err) {
       setDataError(friendlyError(err));
@@ -1040,13 +1088,7 @@ function AppShell() {
         else if (line.match_kind === "transfer") await deleteTransfer(line.match_id);
         else if (line.match_kind === "collection") await deleteCollection(line.match_id);
       }
-      await updateBankStatementLine(line.id, {
-        status: "unmatched",
-        match_kind: null,
-        match_id: null,
-        matched_at: null,
-        matched_by: null,
-      });
+      await removeMatchLinks(line.id);
       await Promise.all([loadData(), loadBankData()]);
     } catch (err) {
       setDataError(friendlyError(err));
@@ -1194,10 +1236,9 @@ function AppShell() {
           const problems = validateMoneyRow({ date, amount, account });
 
           // An Expense ID means "overwrite that existing expense" instead of
-          // adding a new one. Only admins may do this (matches the manual Edit
-          // permission — expenses RLS actually allows any approved user to
-          // UPDATE, but the upload path deliberately holds it to the same bar
-          // as the Edit button rather than opening a wider hole); the Expense
+          // adding a new one. Only admins may do this: since migration 16 the
+          // expenses UPDATE policy is admin-only (INSERT is staff+), the same
+          // bar as the Edit button, so the UI check mirrors RLS; the Expense
           // ID must resolve to a real expense whose Category matches this
           // row's, or the row is rejected rather than overwriting the wrong
           // record.
@@ -1605,6 +1646,11 @@ function AppShell() {
             onClassifyLine={classifyBankLine}
             onIgnoreLine={setBankLineIgnored}
             onUnmatchLine={unmatchBankLine}
+            onApplyRerun={applyBankRerun}
+            onLinkLine={linkBankLine}
+            onSyncRun={runBankSync}
+            onUndoSync={undoSyncRun}
+            onLoadSyncRuns={fetchSyncRuns}
             onDeleteStatement={removeBankStatement}
           />
         )}

@@ -41,10 +41,12 @@ export default function ExpensesPage({
   return (
     <section className="page">
       <div className="page-actions">
+        {/* "Bank Reference" is read-only (written by bank reconciliation); the
+            import parser ignores it, so the report round-trips into the template. */}
         <button className="button secondary" onClick={() => downloadTemplate(
           "expense_template.xlsx",
-          ["Expense ID", "Date", "Category", "Payment A/C", "Amount", "Reference", "Description"],
-          ["", "2026-06-01", "Rent", "HDFC", 25000, "RENT-002", "Monthly rent"]
+          ["Expense ID", "Date", "Category", "Payment A/C", "Amount", "Reference", "Description", "Bank Reference"],
+          ["", "2026-06-01", "Rent", "HDFC", 25000, "RENT-002", "Monthly rent", ""]
         )}>
           Download Template
         </button>
