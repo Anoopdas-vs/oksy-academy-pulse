@@ -1,7 +1,7 @@
 // Bank reconciliation helpers: book-balance math and auto-matching uploaded
 // statement lines against the app's own transactions.
 
-import { formatMoney } from "./format.js";
+import { formatMoney, receiptNo, expenseCode } from "./format.js";
 import { daysBetweenISO } from "./dates.js";
 
 const amt = (v) => Number(v || 0);
@@ -248,15 +248,7 @@ const asAutoLine = (l) => ({
 //   [{ line, old_status, new_status, links, reason, candidates,
 //      match_kind, match_id }]   (match_kind/id = first link, for display)
 export function planRerun(statementLines, allLines, account, data) {
-  const open = statementLines
-    .filter((l) => OPEN_STATUSES.has(l.status))
-    .sort((a, b) => (a.seq || 0) - (b.seq || 0));
-  const results = matchStatementLines(
-    open.map((l) => ({ ...asAutoLine(l), id: l.id, seq: l.seq })),
-    account,
-    data,
-    { usedKeys: usedKeysOf(allLines, account) }
-  );
+  const { open, results } = rematchOpen(statementLines, allLines, account, data);
   const changes = [];
   open.forEach((line, i) => {
     const r = results[i];
@@ -273,6 +265,31 @@ export function planRerun(statementLines, allLines, account, data) {
     });
   });
   return changes;
+}
+
+// Why each open line is still open, for the review table: re-runs the
+// matcher read-only and keeps the 'review' outcomes.
+//   -> Map(lineId -> { reason, candidates })
+export function reviewHints(statementLines, allLines, account, data) {
+  const { open, results } = rematchOpen(statementLines, allLines, account, data);
+  const hints = new Map();
+  open.forEach((line, i) => {
+    if (results[i].status === "review") hints.set(line.id, { reason: results[i].reason, candidates: results[i].candidates });
+  });
+  return hints;
+}
+
+function rematchOpen(statementLines, allLines, account, data) {
+  const open = statementLines
+    .filter((l) => OPEN_STATUSES.has(l.status))
+    .sort((a, b) => (a.seq || 0) - (b.seq || 0));
+  const results = matchStatementLines(
+    open.map((l) => ({ ...asAutoLine(l), id: l.id, seq: l.seq })),
+    account,
+    data,
+    { usedKeys: usedKeysOf(allLines, account) }
+  );
+  return { open, results };
 }
 
 // Up to 5 subsets (2..maxSize entries) of `entries` whose values sum to
@@ -802,3 +819,125 @@ export function isLinkConflict(err) {
   return err?.code === "23505" || /duplicate key value/i.test(err?.message || "");
 }
 export const LINK_CONFLICT_MESSAGE = "This entry is already linked to another bank line.";
+
+// ---------------------------------------------------------------------------
+// Review-table view helpers (pure). Single-tenant: one academy's books.
+// ---------------------------------------------------------------------------
+
+export const transferCode = (id) => `TRF-${String(id).padStart(5, "0")}`;
+export const BOOK_KIND_TAG = { collection: "Fee", expense: "Expense", transfer: "Transfer" };
+
+// Plain-words reasons for review rows.
+export const REASON_LABEL = {
+  split_needed: "Split needed",
+  name_unknown: "Name unknown",
+  name_ambiguous: "Name ambiguous",
+  utr_amount_mismatch: "UTR amount mismatch",
+  utr_ambiguous: "UTR ambiguous",
+  near_date_suggestion: "Near-date suggestion",
+  ambiguous: "Ambiguous",
+  name_confirmed: "Name-confirmed",
+};
+
+// "kind:id" -> { kind, id, date, amount (positive), label (human Book ID) }.
+// Fee collections show their receipt no. (OKSY/000236), expenses their code
+// (EXP-00273), transfers TRF-00012.
+export function ledgerByKeyOf({ collections = [], expenses = [], transfers = [] } = {}) {
+  const map = new Map();
+  collections.forEach((c) =>
+    map.set(`collection:${c.id}`, { kind: "collection", id: c.id, date: c.date, amount: amt(c.amount), label: receiptNo(c.id) })
+  );
+  expenses.forEach((e) =>
+    map.set(`expense:${e.id}`, { kind: "expense", id: e.id, date: e.date, amount: amt(e.amount), label: expenseCode(e.id) })
+  );
+  transfers.forEach((t) =>
+    map.set(`transfer:${t.id}`, { kind: "transfer", id: t.id, date: t.date, amount: amt(t.amount), label: transferCode(t.id) })
+  );
+  return map;
+}
+
+// One row per bank line (a group shows all its entries in that one row).
+// `lines` carry `.links` (attachLinks); `hints` is reviewHints() output.
+export function buildReconRows(lines, ledgerByKey = new Map(), hints = new Map()) {
+  const entryOf = (kind, id) => ledgerByKey.get(`${kind}:${id}`);
+  return lines.map((ln) => {
+    const direction = amt(ln.deposit) > 0 ? "CR" : "DR";
+    const bankAmount = direction === "CR" ? amt(ln.deposit) : amt(ln.withdrawal);
+    const links = (ln.links || []).map((k) => {
+      const e = entryOf(k.bookKind, k.bookId);
+      return {
+        kind: k.bookKind,
+        bookId: k.bookId,
+        label: e ? e.label : `${BOOK_KIND_TAG[k.bookKind] || k.bookKind} #${k.bookId}`,
+        date: e ? isoDay(e.date) : null,
+        amount: e ? e.amount : 0,
+        source: k.source,
+      };
+    });
+    const d = describeLine(ln, links.map((k) => ({ date: k.date, amount: k.amount })));
+    const hint = hints.get(ln.id);
+    const bankDate = isoDay(ln.txn_date ?? ln.date);
+    const suggested = hint?.candidates?.find((c) => c.suggested);
+    const suggestionEntry = suggested && entryOf(suggested.bookKind, suggested.bookId);
+    return {
+      lineId: ln.id,
+      seq: ln.seq,
+      bankDate,
+      description: ln.description || "",
+      direction,
+      bankAmount,
+      links,
+      bookDates: links.map((k) => k.date || "—"),
+      bookAmounts: d.bookAmounts,
+      dateDiff: d.dateDiff,
+      amountDiff: d.amountDiff,
+      result: ln.status === "ignored" ? "IGNORED" : d.result,
+      reason: links.length ? null : (hint?.reason ?? null),
+      status: ln.status,
+      suggestion: suggested
+        ? {
+            kind: suggested.bookKind,
+            bookId: suggested.bookId,
+            label: suggestionEntry ? suggestionEntry.label : `${BOOK_KIND_TAG[suggested.bookKind]} #${suggested.bookId}`,
+            date: suggested.date,
+            amount: suggested.amount,
+            dateDiff: suggested.dateDiff,
+          }
+        : null,
+      line: ln,
+    };
+  });
+}
+
+export const RECON_FILTERS = [
+  { key: "all", label: "All" },
+  { key: "match", label: "Match" },
+  { key: "group", label: "Group" },
+  { key: "date_diff", label: "Date diff" },
+  { key: "amount_diff", label: "Amount diff" },
+  { key: "review", label: "Review" },
+  { key: "unmatched", label: "Unmatched" },
+  { key: "ignored", label: "Ignored" },
+];
+const FILTER_RESULT = {
+  match: "MATCH",
+  group: "GROUP",
+  date_diff: "DATE_DIFF",
+  amount_diff: "AMOUNT_DIFF",
+  review: "REVIEW",
+  unmatched: "UNMATCHED",
+  ignored: "IGNORED",
+};
+
+export const reconRowMatchesFilter = (row, key) => key === "all" || row.result === FILTER_RESULT[key];
+
+// { all, match, group, date_diff, amount_diff, review, unmatched, ignored }
+export function reconFilterCounts(rows) {
+  const counts = Object.fromEntries(RECON_FILTERS.map((f) => [f.key, 0]));
+  rows.forEach((r) => {
+    counts.all += 1;
+    const key = Object.keys(FILTER_RESULT).find((k) => FILTER_RESULT[k] === r.result);
+    if (key) counts[key] += 1;
+  });
+  return counts;
+}

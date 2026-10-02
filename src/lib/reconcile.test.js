@@ -22,6 +22,11 @@ import {
   attachLinks,
   linksToLinePatch,
   isLinkConflict,
+  ledgerByKeyOf,
+  buildReconRows,
+  reviewHints,
+  reconFilterCounts,
+  reconRowMatchesFilter,
   LINK_CONFLICT_MESSAGE,
 } from "./reconcile.js";
 
@@ -758,5 +763,115 @@ describe("planRerun — uses the same passes", () => {
     assert.equal(plan[0].new_status, "review");
     assert.equal(plan[0].reason, "near_date_suggestion");
     assert.deepEqual(plan[0].links, []);
+  });
+});
+
+describe("buildReconRows — review table rows", () => {
+  const data = {
+    collections: [
+      { id: 236, account: "HDFC", date: "2026-03-05", amount: 1800, student_name: "A" },
+      { id: 245, account: "HDFC", date: "2026-03-06", amount: 2000, student_name: "B" },
+      { id: 243, account: "HDFC", date: "2026-03-06", amount: 800, student_name: "C" },
+      { id: 300, account: "HDFC", date: "2026-03-07", amount: 13000, student_name: "D" },
+    ],
+    expenses: [{ id: 273, account: "HDFC", date: "2026-03-05", amount: 540, category: "Misc" }],
+    transfers: [{ id: 12, from_account: "Cash", to_account: "HDFC", date: "2026-03-09", amount: 25000 }],
+  };
+  const ledger = ledgerByKeyOf(data);
+  const line = (id, extra) => ({
+    id, seq: id, status: "matched", txn_date: "2026-03-05", description: "x", deposit: 0, withdrawal: 0, links: [], ...extra,
+  });
+  const link = (bookKind, bookId, source = "auto_exact") => ({ bookKind, bookId, source });
+  const rowOf = (ln, hints) => buildReconRows([ln], ledger, hints)[0];
+
+  test("MATCH: one link, human book id, zero diffs, CR direction", () => {
+    const r = rowOf(line(1, { deposit: 1800, links: [link("collection", 236)] }));
+    assert.equal(r.result, "MATCH");
+    assert.equal(r.direction, "CR");
+    assert.equal(r.bankAmount, 1800);
+    assert.equal(r.links[0].label, "OKSY/000236");
+    assert.deepEqual([r.dateDiff, r.amountDiff], [0, 0]);
+  });
+
+  test("GROUP: two entries stay in ONE row with bookAmounts as an array", () => {
+    const rows = buildReconRows(
+      [line(2, { txn_date: "2026-03-06", deposit: 2800, links: [link("collection", 245, "auto_group"), link("collection", 243, "auto_group")] })],
+      ledger
+    );
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].result, "GROUP");
+    assert.deepEqual(rows[0].links.map((k) => k.label), ["OKSY/000245", "OKSY/000243"]);
+    assert.deepEqual(rows[0].bookAmounts, ["2,000.00", "800.00"]);
+    assert.deepEqual(rows[0].bookDates, ["2026-03-06", "2026-03-06"]);
+  });
+
+  test("DATE_DIFF: expense booked a day before the bank date, DR direction", () => {
+    const r = rowOf(line(3, { txn_date: "2026-03-06", withdrawal: 540, links: [link("expense", 273)] }));
+    assert.equal(r.result, "DATE_DIFF");
+    assert.equal(r.direction, "DR");
+    assert.equal(r.dateDiff, 1);
+    assert.equal(r.links[0].label, "EXP-00273");
+  });
+
+  test("AMOUNT_DIFF: bank 13,500 vs fee 13,000 is bank minus books", () => {
+    const r = rowOf(line(4, { txn_date: "2026-03-07", deposit: 13500, links: [link("collection", 300, "auto_utr")] }));
+    assert.equal(r.result, "AMOUNT_DIFF");
+    assert.equal(r.amountDiff, 500);
+  });
+
+  test("REVIEW: carries the hint reason and an unlinked near-date suggestion", () => {
+    const hints = new Map([
+      [5, { reason: "near_date_suggestion", candidates: [{ bookKind: "expense", bookId: 273, date: "2026-03-05", amount: 540, dateDiff: 1, suggested: true }] }],
+    ]);
+    const r = rowOf(line(5, { status: "review", txn_date: "2026-03-06", withdrawal: 540 }), hints);
+    assert.equal(r.result, "REVIEW");
+    assert.equal(r.reason, "near_date_suggestion");
+    assert.deepEqual(r.links, []);
+    assert.equal(r.suggestion.label, "EXP-00273");
+    assert.equal(r.suggestion.dateDiff, 1);
+  });
+
+  test("UNMATCHED: no links, no hint, no reason", () => {
+    const r = rowOf(line(6, { status: "unmatched", withdrawal: 777 }));
+    assert.equal(r.result, "UNMATCHED");
+    assert.equal(r.reason, null);
+    assert.equal(r.suggestion, null);
+  });
+
+  test("a transfer link shows its TRF code; ignored lines get result IGNORED", () => {
+    const t = rowOf(line(7, { txn_date: "2026-03-09", deposit: 25000, links: [link("transfer", 12)] }));
+    assert.equal(t.links[0].label, "TRF-00012");
+    assert.equal(t.result, "MATCH");
+    assert.equal(rowOf(line(8, { status: "ignored" })).result, "IGNORED");
+  });
+
+  test("reviewHints re-runs the matcher read-only and keeps only review lines", () => {
+    const lines = [
+      { id: 1, seq: 1, account: "HDFC", status: "review", txn_date: "2026-03-06", description: "", reference: "", withdrawal: 540, deposit: 0 },
+      { id: 2, seq: 2, account: "HDFC", status: "unmatched", txn_date: "2026-03-10", description: "", reference: "", withdrawal: 777, deposit: 0 },
+    ];
+    const hints = reviewHints(lines, lines, "HDFC", data);
+    assert.equal(hints.get(1).reason, "near_date_suggestion");
+    assert.equal(hints.has(2), false);
+  });
+
+  test("filter counts and row filtering", () => {
+    const rows = buildReconRows(
+      [
+        line(1, { deposit: 1800, links: [link("collection", 236)] }),
+        line(2, { txn_date: "2026-03-06", deposit: 2800, links: [link("collection", 245), link("collection", 243)] }),
+        line(3, { txn_date: "2026-03-06", withdrawal: 540, links: [link("expense", 273)] }),
+        line(4, { txn_date: "2026-03-07", deposit: 13500, links: [link("collection", 300)] }),
+        line(5, { status: "review", withdrawal: 1 }),
+        line(6, { status: "unmatched", withdrawal: 2 }),
+        line(7, { status: "ignored", withdrawal: 3 }),
+      ],
+      ledger
+    );
+    assert.deepEqual(reconFilterCounts(rows), {
+      all: 7, match: 1, group: 1, date_diff: 1, amount_diff: 1, review: 1, unmatched: 1, ignored: 1,
+    });
+    assert.equal(rows.filter((r) => reconRowMatchesFilter(r, "all")).length, 7);
+    assert.deepEqual(rows.filter((r) => reconRowMatchesFilter(r, "group")).map((r) => r.lineId), [2]);
   });
 });

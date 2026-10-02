@@ -14,7 +14,15 @@ import {
   bankReferenceMismatches,
   isOrderAssumed,
   planRerun,
+  reviewHints,
   suggestSplitGroups,
+  ledgerByKeyOf,
+  buildReconRows,
+  reconFilterCounts,
+  reconRowMatchesFilter,
+  RECON_FILTERS,
+  REASON_LABEL,
+  BOOK_KIND_TAG,
 } from "../lib/reconcile.js";
 import { outstanding } from "../lib/fees.js";
 
@@ -320,6 +328,7 @@ function ReconcileView({
   const [openId, setOpenId] = useState(null);
   const [classifying, setClassifying] = useState(null); // a line row
   const [rerun, setRerun] = useState(null); // { statementId, changes } dry-run awaiting confirmation
+  const [tableView, setTableView] = useState("new"); // "new" review table | "classic" table
 
   const linesByStatement = useMemo(() => {
     const map = new Map();
@@ -406,6 +415,16 @@ function ReconcileView({
                 <p>{st.file_name}</p>
               </div>
               <div className="header-actions">
+                {isOpen && (
+                  <div className="subtab-switch recon-view-switch" role="group" aria-label="Table view">
+                    <button className={tableView === "new" ? "subtab active" : "subtab"} onClick={() => setTableView("new")}>
+                      New view
+                    </button>
+                    <button className={tableView === "classic" ? "subtab active" : "subtab"} onClick={() => setTableView("classic")}>
+                      Classic view
+                    </button>
+                  </div>
+                )}
                 <button className="button secondary small" onClick={() => setOpenId(isOpen ? null : st.id)}>
                   {isOpen ? "Hide lines" : "Show lines"}
                 </button>
@@ -461,7 +480,19 @@ function ReconcileView({
               />
             </div>
 
-            {isOpen && (
+            {isOpen && tableView === "new" && (
+              <ReconGrid
+                lines={lines}
+                allLines={bankLines}
+                account={st.account}
+                data={data}
+                isAdmin={isAdmin}
+                onClassify={setClassifying}
+                onIgnoreLine={onIgnoreLine}
+                onUnmatchLine={onUnmatchLine}
+              />
+            )}
+            {isOpen && tableView === "classic" && (
               <table>
                 <thead>
                   <tr>
@@ -479,35 +510,13 @@ function ReconcileView({
                       <td className="amount-positive">{ln.deposit ? formatMoney(ln.deposit) : ""}</td>
                       <td><StatusTag line={ln} data={data} students={students} /></td>
                       <td className="row-actions">
-                        {isAdmin && (ln.status === "unmatched" || ln.status === "review") && (
-                          <>
-                            <button className="button secondary small" onClick={() => setClassifying(ln)}>
-                              {ln.status === "review" ? "Resolve" : "Classify"}
-                            </button>
-                            <button className="button ghost small" onClick={() => onIgnoreLine(ln, true)}>
-                              Ignore
-                            </button>
-                          </>
-                        )}
-                        {isAdmin && ln.status === "ignored" && (
-                          <button className="button ghost small" onClick={() => onIgnoreLine(ln, false)}>
-                            Un-ignore
-                          </button>
-                        )}
-                        {isAdmin && (ln.status === "matched" || ln.status === "classified") && (
-                          <button
-                            className="button ghost small danger"
-                            onClick={() => {
-                              const created = ln.status === "classified" && ln.match_id;
-                              const msg = created
-                                ? `Unmatch this line and DELETE the ${ln.match_kind} it created?`
-                                : "Unmatch this line? (the existing record is kept)";
-                              if (window.confirm(msg)) onUnmatchLine(ln, { deleteRecord: !!created });
-                            }}
-                          >
-                            Unmatch
-                          </button>
-                        )}
+                        <LineActions
+                          ln={ln}
+                          isAdmin={isAdmin}
+                          onClassify={setClassifying}
+                          onIgnoreLine={onIgnoreLine}
+                          onUnmatchLine={onUnmatchLine}
+                        />
                       </td>
                     </tr>
                   ))}
@@ -616,6 +625,175 @@ function SplitSuggestions({ lines, allLines, account, data }) {
         ))}
       </ul>
     </div>
+  );
+}
+
+// Classify / Resolve / Ignore / Un-ignore / Unmatch for one stored line.
+// Shared by the classic table and the review table so both behave the same.
+function LineActions({ ln, isAdmin, onClassify, onIgnoreLine, onUnmatchLine }) {
+  if (!isAdmin) return null;
+  return (
+    <>
+      {(ln.status === "unmatched" || ln.status === "review") && (
+        <>
+          <button className="button secondary small" onClick={() => onClassify(ln)}>
+            {ln.status === "review" ? "Resolve" : "Classify"}
+          </button>
+          <button className="button ghost small" onClick={() => onIgnoreLine(ln, true)}>
+            Ignore
+          </button>
+        </>
+      )}
+      {ln.status === "ignored" && (
+        <button className="button ghost small" onClick={() => onIgnoreLine(ln, false)}>
+          Un-ignore
+        </button>
+      )}
+      {(ln.status === "matched" || ln.status === "classified") && (
+        <button
+          className="button ghost small danger"
+          onClick={() => {
+            const created = ln.status === "classified" && ln.match_id;
+            const msg = created
+              ? `Unmatch this line and DELETE the ${ln.match_kind} it created?`
+              : "Unmatch this line? (the existing record is kept)";
+            if (window.confirm(msg)) onUnmatchLine(ln, { deleteRecord: !!created });
+          }}
+        >
+          Unmatch
+        </button>
+      )}
+    </>
+  );
+}
+
+/* ----------------------- Excel-style review table ----------------------- */
+
+const RESULT_LABEL = {
+  MATCH: "Match",
+  GROUP: "Group",
+  DATE_DIFF: "Date diff",
+  AMOUNT_DIFF: "Amount diff",
+  REVIEW: "Review",
+  UNMATCHED: "Unmatched",
+  IGNORED: "Ignored",
+};
+
+const money2 = (n) => Number(n).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+// One row per bank line; a group shows all its book entries in that row.
+// Single-tenant: one academy's books, no tenant scoping.
+function ReconGrid({ lines, allLines, account, data, isAdmin, onClassify, onIgnoreLine, onUnmatchLine }) {
+  const [filter, setFilter] = useState("all");
+  const ledger = useMemo(
+    () => ledgerByKeyOf(data),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [data.collections, data.expenses, data.transfers]
+  );
+  const hints = useMemo(
+    () => reviewHints(lines, allLines, account, data),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [lines, allLines, account, data.collections, data.expenses, data.transfers]
+  );
+  const rows = useMemo(() => buildReconRows(lines, ledger, hints), [lines, ledger, hints]);
+  const counts = useMemo(() => reconFilterCounts(rows), [rows]);
+  const shown = rows.filter((r) => reconRowMatchesFilter(r, filter));
+
+  return (
+    <>
+      <div className="recon-chips" role="group" aria-label="Filter lines">
+        {RECON_FILTERS.map((f) => (
+          <button
+            key={f.key}
+            type="button"
+            className={filter === f.key ? "recon-chip active" : "recon-chip"}
+            onClick={() => setFilter(f.key)}
+          >
+            {f.label} <b>{counts[f.key]}</b>
+          </button>
+        ))}
+      </div>
+      <div className="table-scroll">
+        <table className="recon-grid">
+          <thead>
+            <tr>
+              <th>Result</th><th>Bank date</th><th>Description</th><th>Bank amount</th>
+              <th>Book ID(s)</th><th>Book date</th><th>Book amount</th>
+              <th>Date diff</th><th>Amount diff</th><th>Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            {shown.length === 0 && (
+              <tr><td colSpan={10} className="recon-empty">No lines in this view.</td></tr>
+            )}
+            {shown.map((r) => (
+              <ReconRow
+                key={r.lineId}
+                r={r}
+                isAdmin={isAdmin}
+                onClassify={onClassify}
+                onIgnoreLine={onIgnoreLine}
+                onUnmatchLine={onUnmatchLine}
+              />
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </>
+  );
+}
+
+function ReconRow({ r, isAdmin, onClassify, onIgnoreLine, onUnmatchLine }) {
+  const linked = r.links.length > 0;
+  const sources = new Set(r.links.map((k) => k.source));
+  const sug = !linked ? r.suggestion : null;
+  const reasonText = r.reason ? REASON_LABEL[r.reason] || r.reason : r.result === "REVIEW" ? "Needs review" : "";
+  return (
+    <tr className={r.result === "REVIEW" || r.result === "UNMATCHED" ? "row-open" : ""}>
+      <td>
+        <span className={`rbadge ${r.result.toLowerCase()}`}>{RESULT_LABEL[r.result]}</span>
+        {sources.has("auto_name") && <span className="mini-tag ok recon-src">Name-confirmed</span>}
+        {sources.has("auto_utr") && <span className="mini-tag ok recon-src">UTR</span>}
+        {isOrderAssumed(r.line) && <span className="mini-tag warn recon-src">Assumed by order</span>}
+        {r.result === "REVIEW" && reasonText && <div className="recon-reason">{reasonText}</div>}
+      </td>
+      <td>{r.bankDate}</td>
+      <td className="desc-cell recon-desc" title={r.description}>{r.description}</td>
+      <td className={r.direction === "CR" ? "amount-positive recon-num" : "amount-negative recon-num"}>
+        {money2(r.bankAmount)}
+      </td>
+      <td>
+        {linked
+          ? r.links.map((k, i) => (
+              <span className="recon-book" key={`${k.kind}:${k.bookId}`}>
+                {i > 0 && ", "}
+                {k.label} <span className="mini-tag recon-kind">{BOOK_KIND_TAG[k.kind]}</span>
+              </span>
+            ))
+          : sug
+            ? <span className="recon-suggest" title="Suggested only — not linked">{sug.label} <span className="mini-tag recon-kind">{BOOK_KIND_TAG[sug.kind]}</span> (suggested)</span>
+            : "—"}
+      </td>
+      <td>{linked ? r.bookDates.join(", ") : sug ? <span className="recon-suggest">{sug.date}</span> : "—"}</td>
+      <td className="recon-num">
+        {linked ? r.bookAmounts.join(", ") : sug ? <span className="recon-suggest">{money2(sug.amount)}</span> : "—"}
+      </td>
+      <td className={linked && r.dateDiff !== 0 ? "recon-diff warn-date" : "recon-num"}>
+        {linked ? r.dateDiff : sug ? <span className="recon-suggest">{sug.dateDiff}</span> : "—"}
+      </td>
+      <td className={linked && r.amountDiff !== 0 ? "recon-diff warn-amount" : "recon-num"}>
+        {linked ? money2(r.amountDiff) : "—"}
+      </td>
+      <td className="row-actions">
+        <LineActions
+          ln={r.line}
+          isAdmin={isAdmin}
+          onClassify={onClassify}
+          onIgnoreLine={onIgnoreLine}
+          onUnmatchLine={onUnmatchLine}
+        />
+      </td>
+    </tr>
   );
 }
 
