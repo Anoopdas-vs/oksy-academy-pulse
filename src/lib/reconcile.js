@@ -166,19 +166,13 @@ export function identityMatchScore(description, reference, label) {
 // candidate's own label).
 const DATE_WEIGHT = 0.4;
 const IDENTITY_WEIGHT = 0.6;
-// When several candidates contend for a line, the identity score must clear
-// this floor, AND beat the runner-up by this margin, before we auto-pick a
-// winner -- otherwise it's a genuine ambiguity and the line goes to review.
-const MIN_IDENTITY_TO_DISAMBIGUATE = 0.55;
-const DISAMBIGUATION_MARGIN = 0.15;
-// Sentinel match_score stored for a pairing chosen only by statement order
-// (same date + amount, equal line/record counts, no name evidence). The UI
-// reads it back via isOrderAssumed() to flag the match for a manual check.
+// Sentinel match_score that older versions stored for a pairing chosen only
+// by statement order. Nothing writes it any more; isOrderAssumed() still lets
+// the UI flag such historic matches for a manual check.
 export const ORDER_ASSUMED_SCORE = 0.01;
 
 const isoDay = (d) => String(d || "").slice(0, 10);
 const entryKey = (e) => `${e.kind}:${e.id}`;
-const round2 = (n) => Math.round(n * 100) / 100;
 
 // Direction, whole-rupee amount and calendar day of a statement line.
 // Accepts either an upload-time line ({ date }) or a stored one ({ txn_date }).
@@ -221,181 +215,6 @@ export function rankCandidates(ln, ledger, { used = new Set(), dayWindow = 4 } =
     .sort((a, b) => b.score - a.score);
 }
 
-// An exact-date candidate is still not trusted when a different candidate
-// in the window is clearly the better payer-identity fit.
-const hasIdentityConflict = (exact, pool) =>
-  pool.some(
-    (s) =>
-      s !== exact &&
-      s.identityScore >= MIN_IDENTITY_TO_DISAMBIGUATE &&
-      s.identityScore - exact.identityScore >= DISAMBIGUATION_MARGIN
-  );
-
-// Auto-match statement `lines` against `account`'s ledger. Returns an array
-// parallel to `lines`, each element one of:
-//   { status: 'unmatched' }
-//   { status: 'matched', match_kind, match_id, match_score, match_method,
-//     assumed_by_order? }
-//   { status: 'review', candidates: [{ match_kind, match_id, date, score }] }
-// Each app entry is consumed by at most one line. Passes, most certain first:
-//   0. UTR       a 12-digit transaction id on the record equals the line's
-//   1. exact     the line has exactly one same-date candidate nobody else
-//                also claims (and no better identity fit elsewhere)
-//   2. group     N lines and N records share date+amount: pair by identity
-//                where decisive, the rest by statement order ("assumed")
-//   3. scored    date + identity scoring; ambiguity goes to review
-// `usedKeys` ("kind:id") seeds entries that must not be matched again.
-export function autoMatch(lines, account, data, dayWindow = 4, { usedKeys = [] } = {}) {
-  const ledger = accountLedger(account, data);
-  const used = new Set(usedKeys);
-  const results = new Array(lines.length).fill(null);
-  const rankedFor = (i) => rankCandidates(lines[i], ledger, { used, dayWindow });
-  const openIdx = () => lines.map((_, i) => i).filter((i) => !results[i]);
-
-  const take = (i, e, score, method, extra = {}) => {
-    used.add(entryKey(e));
-    results[i] = {
-      status: "matched",
-      match_kind: e.kind,
-      match_id: e.id,
-      match_score: round2(score),
-      match_method: method,
-      ...extra,
-    };
-  };
-
-  // Resolve proposals {i, e, score} only where the record is proposed by one
-  // line alone (and, for `claims`, claimed by no other line at all).
-  const applyUnique = (proposals, claims, method) => {
-    proposals.forEach(({ i, s }) => {
-      if ((claims.get(entryKey(s.e)) || 0) === 1) take(i, s.e, s.score, method);
-    });
-  };
-  const countClaims = (poolsByLine) => {
-    const claims = new Map();
-    poolsByLine.forEach((pool) =>
-      pool.forEach((s) => claims.set(entryKey(s.e), (claims.get(entryKey(s.e)) || 0) + 1))
-    );
-    return claims;
-  };
-
-  // Pass 0 -- UTR.
-  {
-    const pools = [];
-    const proposals = [];
-    openIdx().forEach((i) => {
-      const utrs = extractUtrs(lines[i].description, lines[i].reference);
-      if (!utrs.length) return;
-      const hits = rankedFor(i).filter((s) => extractUtrs(s.e.refText).some((u) => utrs.includes(u)));
-      pools.push(hits);
-      if (hits.length === 1) proposals.push({ i, s: hits[0] });
-    });
-    applyUnique(proposals, countClaims(pools), "utr");
-    proposals.forEach(({ i }) => {
-      if (results[i]) results[i].match_score = 1;
-    });
-  }
-
-  // Pass 1 -- unique exact date + amount, one-to-one.
-  {
-    const pools = [];
-    const proposals = [];
-    openIdx().forEach((i) => {
-      const ranked = rankedFor(i);
-      const exact = ranked.filter((s) => s.sameDate);
-      pools.push(exact);
-      if (exact.length === 1 && !hasIdentityConflict(exact[0], ranked)) proposals.push({ i, s: exact[0] });
-    });
-    applyUnique(proposals, countClaims(pools), "exact");
-  }
-
-  // Pass 2 -- equal-sized same date+amount groups.
-  {
-    const groups = new Map();
-    openIdx().forEach((i) => {
-      const { wantDeposit, target, dateStr } = lineFacts(lines[i]);
-      const k = `${wantDeposit}|${target}|${dateStr}`;
-      if (!groups.has(k)) groups.set(k, { wantDeposit, target, dateStr, idxs: [] });
-      groups.get(k).idxs.push(i);
-    });
-    groups.forEach(({ wantDeposit, target, dateStr, idxs }) => {
-      if (idxs.length < 2) return;
-      let entries = ledger
-        .filter(
-          (e) =>
-            !used.has(entryKey(e)) &&
-            e.delta > 0 === wantDeposit &&
-            Math.round(Math.abs(e.delta)) === target &&
-            isoDay(e.date) === dateStr
-        )
-        .sort((a, b) => Number(a.id) - Number(b.id) || (a.kind < b.kind ? -1 : 1));
-      if (entries.length !== idxs.length) return;
-      let todo = idxs.slice();
-
-      // Identity first: a line whose payer clearly points at one record.
-      for (let progress = true; progress && todo.length; ) {
-        progress = false;
-        const picks = [];
-        todo.forEach((i) => {
-          const scored = entries
-            .map((e) => ({ e, id: identityMatchScore(lines[i].description, lines[i].reference, e.label) }))
-            .sort((a, b) => b.id - a.id);
-          const [best, next] = scored;
-          if (best.id >= MIN_IDENTITY_TO_DISAMBIGUATE && (!next || best.id - next.id >= DISAMBIGUATION_MARGIN)) {
-            picks.push({ i, e: best.e, id: best.id });
-          }
-        });
-        picks.forEach(({ i, e, id }) => {
-          if (picks.filter((p) => p.e === e).length !== 1) return;
-          take(i, e, DATE_WEIGHT + IDENTITY_WEIGHT * id, "group-identity");
-          todo = todo.filter((x) => x !== i);
-          entries = entries.filter((x) => x !== e);
-          progress = true;
-        });
-      }
-
-      // The rest: statement order <-> receipt order. Not evidence, so it is
-      // flagged and the caller must not write bank_reference for it.
-      todo.forEach((i, n) => take(i, entries[n], ORDER_ASSUMED_SCORE, "order", { assumed_by_order: true }));
-    });
-  }
-
-  // Pass 3 -- date + identity scoring for whatever is left.
-  openIdx().forEach((i) => {
-    const pool = rankedFor(i);
-    if (!pool.length) {
-      results[i] = { status: "unmatched" };
-      return;
-    }
-    // A lone exact-date candidate is judged alone (unless a better identity
-    // fit exists elsewhere); several exact-date candidates contest among
-    // themselves; otherwise the whole window contests.
-    const exact = pool.filter((s) => s.sameDate);
-    let contest = pool;
-    if (exact.length > 1 || (exact.length === 1 && !hasIdentityConflict(exact[0], pool))) contest = exact;
-    const [top, runnerUp] = contest;
-    const ambiguous =
-      contest.length > 1 &&
-      (top.identityScore < MIN_IDENTITY_TO_DISAMBIGUATE || top.score - runnerUp.score < DISAMBIGUATION_MARGIN);
-
-    if (ambiguous) {
-      results[i] = {
-        status: "review",
-        candidates: pool.slice(0, 5).map((s) => ({
-          match_kind: s.e.kind,
-          match_id: s.e.id,
-          date: s.e.date,
-          score: round2(s.score),
-        })),
-      };
-      return;
-    }
-    take(i, top.e, top.score, "scored");
-  });
-
-  return results;
-}
-
 // True for a stored line that was paired only by statement order.
 export const isOrderAssumed = (line) =>
   line?.status === "matched" && Number(line.match_score) === ORDER_ASSUMED_SCORE;
@@ -421,19 +240,23 @@ const asAutoLine = (l) => ({
   withdrawal: l.withdrawal,
 });
 
-// Dry-run for "Re-run auto-match" on a stored statement. Only lines that are
-// currently 'review' or 'unmatched' are considered; matched / classified /
-// ignored lines are never touched, and the records they hold are excluded
-// from matching. Returns only the lines whose outcome would change:
-//   [{ line, old_status, new_status, match_kind, match_id, match_score,
-//      match_method, assumed_by_order }]
-export function planRerun(statementLines, allLines, account, data, dayWindow = 4) {
+// Dry-run for "Re-run auto-match" on a stored statement, using the same
+// matchStatementLines passes as upload. Only lines that are currently
+// 'review' or 'unmatched' are considered; matched / classified / ignored
+// lines are never touched, and the entries they hold (every link) are
+// excluded. Returns only the lines whose outcome would change:
+//   [{ line, old_status, new_status, links, reason, candidates,
+//      match_kind, match_id }]   (match_kind/id = first link, for display)
+export function planRerun(statementLines, allLines, account, data) {
   const open = statementLines
     .filter((l) => OPEN_STATUSES.has(l.status))
     .sort((a, b) => (a.seq || 0) - (b.seq || 0));
-  const results = autoMatch(open.map(asAutoLine), account, data, dayWindow, {
-    usedKeys: usedKeysOf(allLines, account),
-  });
+  const results = matchStatementLines(
+    open.map((l) => ({ ...asAutoLine(l), id: l.id, seq: l.seq })),
+    account,
+    data,
+    { usedKeys: usedKeysOf(allLines, account) }
+  );
   const changes = [];
   open.forEach((line, i) => {
     const r = results[i];
@@ -442,11 +265,11 @@ export function planRerun(statementLines, allLines, account, data, dayWindow = 4
       line,
       old_status: line.status,
       new_status: r.status,
-      match_kind: r.match_kind || null,
-      match_id: r.match_id ?? null,
-      match_score: r.match_score ?? null,
-      match_method: r.match_method || null,
-      assumed_by_order: !!r.assumed_by_order,
+      links: r.links,
+      reason: r.reason,
+      candidates: r.candidates,
+      match_kind: r.links[0]?.bookKind || null,
+      match_id: r.links[0]?.bookId ?? null,
     });
   });
   return changes;
@@ -686,6 +509,33 @@ const candidateOf = (line, e) => ({
   dateDiff: daysBetweenISO(isoDay(e.date), lineFacts(line).dateStr),
 });
 
+// Bank names / UPI handles that never identify a payer.
+const PAYER_NOISE = new Set([
+  "hdfc", "icici", "sbi", "axis", "kotak", "canara", "federal", "yes", "idfc", "paytm", "ybl",
+  "okaxis", "oksbi", "okhdfcbank", "okicici", "apl", "axl", "ibl", "upi",
+]);
+
+// Payer words of a bank line: handles (@okaxis) and digits stripped, bank
+// names and network jargon dropped. Reuses extractIdentityCandidates, which
+// already keeps UPI local parts ("sreeshmasreeshm@okaxis" -> sreeshmasreeshm).
+const payerTokens = (description, reference) =>
+  extractIdentityCandidates(
+    `${description || ""} ${reference || ""}`.replace(/@[a-zA-Z][a-zA-Z0-9.]*/g, ""),
+    ""
+  ).filter((t) => !PAYER_NOISE.has(t));
+
+// A record's own name tokens of 4+ letters (first name or any other token).
+const nameTokensOf = (label) =>
+  String(label || "")
+    .toLowerCase()
+    .split(/[^a-z]+/)
+    .filter((w) => w.length >= 4);
+
+// True if a name token (4+ letters) is a substring of a payer word, or a
+// payer word of 4+ letters is a substring of the name token.
+const nameMatches = (payer, label) =>
+  nameTokensOf(label).some((t) => payer.some((p) => p.includes(t) || (p.length >= 4 && t.includes(p))));
+
 // Match every statement line against the unlinked ledger entries of `account`.
 // Returns an array parallel to `lines`:
 //   { lineId, index, links: [{ bookKind, bookId, source }],
@@ -696,6 +546,8 @@ const candidateOf = (line, e) => ({
 //   a) auto_utr    12-digit UTR in the description equals the entry's reference
 //                  AND the amount is equal; unequal amount -> review
 //   b) auto_exact  same date + amount, exactly one candidate on both sides
+//   n) auto_name   2+ same-date same-amount candidates: the payer name in the
+//                  description confirms exactly one (and nobody else's) entry
 //   c) auto_group  amount == sum of 2..4 same-day entries, one such combination
 //   d) near date   same amount within +/-3 days, one candidate -> suggestion
 // `usedKeys` ("kind:id") seeds entries that are already linked elsewhere.
@@ -779,6 +631,43 @@ export function matchStatementLines(lines, account, data, { usedKeys = [] } = {}
     });
   }
 
+  // n) name tie-break. Only for lines that still have 2+ same-date,
+  // same-amount candidates. Links only when exactly one candidate's name is
+  // in the payer text and no other open line also name-matches that entry.
+  {
+    const payers = new Map(open().map((i) => [i, payerTokens(lines[i].description, lines[i].reference)]));
+    const pools = new Map();
+    open().forEach((i) => {
+      if (facts[i].cents && exactPool(i).length >= 2) pools.set(i, exactPool(i));
+    });
+    // How many open lines name-match each entry (across every open line).
+    const nameClaims = new Map();
+    open().forEach((i) => {
+      if (!facts[i].cents) return;
+      exactPool(i).forEach((e) => {
+        if (nameMatches(payers.get(i), e.label)) nameClaims.set(entryKey(e), (nameClaims.get(entryKey(e)) || 0) + 1);
+      });
+    });
+    const verdicts = [];
+    pools.forEach((pool, i) => {
+      const named = pool.filter((e) => nameMatches(payers.get(i), e.label));
+      if (named.length === 1 && nameClaims.get(entryKey(named[0])) === 1) {
+        verdicts.push({ i, entry: named[0] });
+      } else {
+        verdicts.push({ i, reason: named.length === 0 ? "name_unknown" : "name_ambiguous" });
+      }
+    });
+    verdicts.forEach(({ i, entry }) => {
+      if (entry) {
+        link(i, [entry], "auto_name");
+        out[i].reason = "name_confirmed";
+      }
+    });
+    verdicts.forEach(({ i, reason }) => {
+      if (reason) review(i, reason, exactPool(i));
+    });
+  }
+
   // c) group: one line == sum of 2..4 same-day entries, unique combination
   {
     const combos = new Map();
@@ -847,8 +736,8 @@ export function matchStatementLines(lines, account, data, { usedKeys = [] } = {}
 // entry. dateDiff = bank date minus book date in days (signed value of the
 // largest absolute gap); amountDiff = bank amount minus the SUM of the books.
 //   result: MATCH | GROUP | DATE_DIFF | AMOUNT_DIFF | REVIEW | UNMATCHED
-// Priority: no links -> UNMATCHED/REVIEW; amount gap -> AMOUNT_DIFF;
-// 2+ links -> GROUP; date gap -> DATE_DIFF; otherwise MATCH.
+// Priority: no links -> UNMATCHED/REVIEW; AMOUNT_DIFF > DATE_DIFF > GROUP >
+// MATCH (a date gap on a group is DATE_DIFF; bookAmounts is always returned).
 export function describeLine(line, linkedBooks = []) {
   if (!linkedBooks.length) {
     return {
@@ -866,8 +755,8 @@ export function describeLine(line, linkedBooks = []) {
   const amountDiff = (lineCents(line) - bookTotal) / 100;
   let result = "MATCH";
   if (amountDiff !== 0) result = "AMOUNT_DIFF";
-  else if (linkedBooks.length >= 2) result = "GROUP";
   else if (dateDiff !== 0) result = "DATE_DIFF";
+  else if (linkedBooks.length >= 2) result = "GROUP";
   return {
     dateDiff,
     amountDiff,

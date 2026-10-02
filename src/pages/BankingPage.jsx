@@ -541,8 +541,10 @@ function ReconcileView({
 
 const rerunLabel = (c) =>
   c.new_status === "matched"
-    ? `${matchKindLabel(c.match_kind)} #${c.match_id}${c.assumed_by_order ? " (assumed by order)" : ""}`
-    : "—";
+    ? c.links.map((k) => `${matchKindLabel(k.bookKind)} #${k.bookId}`).join(" + ")
+    : c.reason
+      ? c.reason.replace(/_/g, " ")
+      : "—";
 
 // Dry-run of "Re-run auto-match": exactly which review/unmatched lines would
 // change. Nothing is written until the admin confirms; matched, classified

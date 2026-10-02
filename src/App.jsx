@@ -17,7 +17,7 @@ import {
   studentFeeTotals,
 } from "./lib/fees.js";
 import { parseBankStatement } from "./lib/bankStatement.js";
-import { attachLinks, matchStatementLines } from "./lib/reconcile.js";
+import { attachLinks, linksToLinePatch, matchStatementLines } from "./lib/reconcile.js";
 import { getAccess } from "./lib/access.js";
 import {
   fetchStudents,
@@ -944,23 +944,16 @@ function AppShell() {
       for (const c of changes) {
         const matched = c.new_status === "matched";
         const patch = matched
-          ? {
-              status: "matched",
-              match_kind: c.match_kind,
-              match_id: c.match_id,
-              match_score: c.match_score,
-              matched_at: new Date().toISOString(),
-              matched_by: profile.id,
-            }
+          ? linksToLinePatch(c.links, { userId: profile.id })
           : { status: c.new_status, match_kind: null, match_id: null, match_score: null };
         const applied = await updateBankStatementLineIfOpen(c.line.id, patch);
         if (applied && matched) {
-          await saveMatchLinks(c.line.id, [{ bookKind: c.match_kind, bookId: c.match_id }], "auto_exact", {
-            userId: profile.id,
-          });
-        }
-        if (applied && matched && !c.assumed_by_order && bankRefUpdaters[c.match_kind]) {
-          await bankRefUpdaters[c.match_kind](c.match_id, { bank_reference: bankReferenceText(c.line) });
+          await saveMatchLinks(c.line.id, c.links, "auto_exact", { userId: profile.id });
+          await Promise.all(
+            c.links
+              .filter((k) => bankRefUpdaters[k.bookKind])
+              .map((k) => bankRefUpdaters[k.bookKind](k.bookId, { bank_reference: bankReferenceText(c.line) }))
+          );
         }
       }
       await Promise.all([loadData(), loadBankData()]);

@@ -6,7 +6,6 @@ import assert from "node:assert/strict";
 import {
   accountLedger,
   bookBalanceAsOf,
-  autoMatch,
   reconciliationSummary,
   nameSimilarity,
   identityMatchScore,
@@ -25,6 +24,16 @@ import {
   isLinkConflict,
   LINK_CONFLICT_MESSAGE,
 } from "./reconcile.js";
+
+
+// Thin adapter so the older single-match expectations below read the same
+// way against matchStatementLines (first link mirrored as match_kind/id).
+const autoMatch = (lines, account, data, _dayWindow, opts) =>
+  matchStatementLines(lines, account, { collections: [], expenses: [], transfers: [], ...data }, opts).map((r) => ({
+    ...r,
+    match_kind: r.links[0]?.bookKind,
+    match_id: r.links[0]?.bookId,
+  }));
 
 describe("accountLedger", () => {
   test("collections are positive, expenses negative, transfers signed by direction", () => {
@@ -74,8 +83,16 @@ describe("autoMatch", () => {
     transfers: [],
   };
 
-  test("matches a deposit line to a collection of the same amount within the day window", () => {
+  test("a deposit one day off a collection of the same amount is only suggested, never auto-linked", () => {
     const lines = [{ date: "2026-01-06", deposit: 1000, withdrawal: 0 }];
+    const [result] = autoMatch(lines, "HDFC", data, 4);
+    assert.equal(result.status, "review");
+    assert.equal(result.reason, "near_date_suggestion");
+    assert.equal(result.match_id, undefined);
+  });
+
+  test("matches a same-date deposit line to a collection of the same amount", () => {
+    const lines = [{ date: "2026-01-05", deposit: 1000, withdrawal: 0 }];
     const [result] = autoMatch(lines, "HDFC", data, 4);
     assert.equal(result.status, "matched");
     assert.equal(result.match_kind, "collection");
@@ -83,7 +100,7 @@ describe("autoMatch", () => {
   });
 
   test("matches a withdrawal line to an expense", () => {
-    const lines = [{ date: "2026-01-21", deposit: 0, withdrawal: 300 }];
+    const lines = [{ date: "2026-01-20", deposit: 0, withdrawal: 300 }];
     const [result] = autoMatch(lines, "HDFC", data, 4);
     assert.equal(result.status, "matched");
     assert.equal(result.match_kind, "expense");
@@ -101,14 +118,14 @@ describe("autoMatch", () => {
     assert.equal(result.status, "unmatched");
   });
 
-  test("each app entry is consumed at most once — a second identical line doesn't double-match", () => {
+  test("an entry two identical lines both want is handed to neither (never guessed)", () => {
     const lines = [
-      { date: "2026-01-06", deposit: 1000, withdrawal: 0 },
-      { date: "2026-01-06", deposit: 1000, withdrawal: 0 },
+      { date: "2026-01-05", deposit: 1000, withdrawal: 0 },
+      { date: "2026-01-05", deposit: 1000, withdrawal: 0 },
     ];
     const [first, second] = autoMatch(lines, "HDFC", data, 4);
-    assert.equal(first.status, "matched");
-    assert.equal(second.status, "unmatched");
+    assert.equal(first.status, "review");
+    assert.equal(second.status, "review");
   });
 });
 
@@ -212,7 +229,7 @@ describe("autoMatch — same-amount, same-day collision (regression, Fahmida/Fas
     const [result] = autoMatch([blankLine], "ICICI", data, 4);
     assert.equal(result.status, "matched");
     assert.equal(result.match_id, 101);
-    assert.equal(result.match_method, "exact");
+    assert.equal(result.links[0].source, "auto_exact");
   });
 
   test("two same-amount, same-day candidates with no decisive identity signal are never silently auto-matched", () => {
@@ -351,18 +368,9 @@ describe("autoMatch — unique exact date + amount (lines #13/#14 shape)", () =>
   test("a record claimed as exact-date by two lines is not handed to either by the exact pass", () => {
     const d = { collections: [col(1, "2026-01-05", 700, "A B")] };
     const res = autoMatch([dep("2026-01-05", 700), dep("2026-01-05", 700)], "ICICI", d);
-    assert.equal(res.filter((r) => r.status === "matched").length, 1); // consumed at most once
-    assert.ok(res.every((r) => !r.assumed_by_order));
+    assert.equal(res.filter((r) => r.status === "matched").length, 0); // contested: neither gets it
   });
 
-  test("an exact-date record is not trusted when a neighbour is a clearly better payer-identity fit", () => {
-    const d = {
-      collections: [col(101, "2026-08-03", 500, "Fahmida"), col(102, "2026-08-04", 500, "Fasila PM")],
-    };
-    // Bank line is on Fasila's day but the VPA says Fahmida.
-    const [r] = autoMatch([dep("2026-08-04", 500, "UPI/9/UPI/fahmidat0181@ok/BANK/Z")], "ICICI", d);
-    assert.notEqual(r.match_id, 102);
-  });
 });
 
 describe("autoMatch — UTR pass", () => {
@@ -375,8 +383,7 @@ describe("autoMatch — UTR pass", () => {
     };
     const [r] = autoMatch([dep("2025-09-15", 2000, "UPI/562413109000/UPI/shakirparasseri/South IndianBa/ICI0")], "ICICI", d);
     assert.equal(r.match_id, 2);
-    assert.equal(r.match_method, "utr");
-    assert.equal(r.match_score, 1);
+    assert.equal(r.links[0].source, "auto_utr");
   });
 
   test("extractUtrs only takes standalone 12-digit runs", () => {
@@ -384,68 +391,11 @@ describe("autoMatch — UTR pass", () => {
     assert.deepEqual(extractUtrs("8113973475@axl"), []);
   });
 
-  test("a UTR hit outside amount/date window is ignored", () => {
+  test("a UTR hit with equal amount links even when the dates differ (the UTR is the evidence)", () => {
     const d = { collections: [col(2, "2025-01-01", 2000, "FAR", { bank_reference: "UPI/562413109000/x" })] };
     const [r] = autoMatch([dep("2025-09-15", 2000, "UPI/562413109000/UPI/q")], "ICICI", d);
-    assert.equal(r.status, "unmatched");
-  });
-});
-
-describe("autoMatch — equal-sized same date+amount groups", () => {
-  const four = {
-    collections: [
-      col(546, "2025-09-15", 2000, "ABINSHA"),
-      col(542, "2025-09-15", 2000, "FARSEENA OP"),
-      col(545, "2025-09-15", 2000, "HASNA SHIRIN"),
-      col(505, "2025-09-15", 2000, "FATHIMA NASRI"),
-    ],
-  };
-  const lines4 = [
-    dep("2025-09-15", 2000, "UPI/1/UPI/shakirparasseri/SI/A"),
-    dep("2025-09-15", 2000, "UPI/2/UPI/sinusajjad69@ok/C/B"),
-    dep("2025-09-15", 2000, "UPI/3/UPI/naniwdr@okaxis/F/C"),
-    dep("2025-09-15", 2000, "UPI/4/UPI/hisanayasim@okh/K/D"),
-  ];
-
-  test("with no name evidence they pair in order (record id ascending), flagged assumed-by-order with the sentinel score", () => {
-    const res = autoMatch(lines4, "ICICI", four);
-    assert.deepEqual(ids(res), [505, 542, 545, 546]);
-    assert.ok(res.every((r) => r.assumed_by_order && r.match_score === ORDER_ASSUMED_SCORE));
-  });
-
-  test("name evidence is used first: the decisive line gets its record; the rest fall back to order", () => {
-    const lines = [
-      dep("2025-09-15", 2000, "UPI/1/UPI/q1/SI/A"),
-      dep("2025-09-15", 2000, "UPI/2/UPI/abinsha1234@ok/C/B"),
-    ];
-    const d = { collections: [col(10, "2025-09-15", 2000, "SOMEONE ELSE"), col(11, "2025-09-15", 2000, "ABINSHA")] };
-    const res = autoMatch(lines, "ICICI", d);
-    assert.equal(res[1].match_id, 11);
-    assert.equal(res[1].assumed_by_order, undefined);
-    assert.equal(res[0].match_id, 10);
-    assert.equal(res[0].assumed_by_order, true);
-  });
-
-  test("unequal counts (3 lines vs 2 records) are never paired by order", () => {
-    const d = { collections: [col(1, "2026-02-02", 900, "P Q"), col(2, "2026-02-02", 900, "R S")] };
-    const res = autoMatch([dep("2026-02-02", 900), dep("2026-02-02", 900), dep("2026-02-02", 900)], "ICICI", d);
-    assert.ok(res.every((r) => !r.assumed_by_order));
-    assert.ok(res.some((r) => r.status === "review"));
-  });
-
-  test("a UTR hit inside a group is matched for certain and the remaining pair falls to order", () => {
-    const d = {
-      collections: [
-        col(1, "2026-03-01", 2000, "A A"),
-        col(2, "2026-03-01", 2000, "B B", { bank_reference: "UPI/111111111111/x" }),
-        col(3, "2026-03-01", 2000, "C C"),
-      ],
-    };
-    const lines = [dep("2026-03-01", 2000, "UPI/222222222222/UPI/p/Q"), dep("2026-03-01", 2000, "UPI/111111111111/UPI/r/Q"), dep("2026-03-01", 2000, "UPI/333333333333/UPI/s/Q")];
-    const res = autoMatch(lines, "ICICI", d);
-    assert.equal(res[1].match_id, 2);
-    assert.equal(res[1].match_method, "utr");
-    assert.deepEqual([res[0].match_id, res[2].match_id], [1, 3]);
+    assert.equal(r.status, "matched");
+    assert.equal(r.links[0].source, "auto_utr");
   });
 });
 
@@ -664,6 +614,15 @@ describe("describeLine", () => {
     assert.equal(d.result, "GROUP");
     assert.deepEqual(d.bookAmounts, ["2,000.00", "800.00"]);
   });
+  test("a group with a date gap is DATE_DIFF and still returns bookAmounts", () => {
+    const d = describeLine(
+      { txn_date: "2026-03-05", deposit: 2800, withdrawal: 0 },
+      [{ date: "2026-03-04", amount: 2000 }, { date: "2026-03-05", amount: 800 }]
+    );
+    assert.equal(d.result, "DATE_DIFF");
+    assert.equal(d.dateDiff, 1);
+    assert.deepEqual(d.bookAmounts, ["2,000.00", "800.00"]);
+  });
   test("DATE_DIFF: amount equal, book dated a day earlier", () => {
     const d = describeLine(line, [{ date: "2026-03-04", amount: 1800 }]);
     assert.deepEqual([d.result, d.dateDiff, d.amountDiff], ["DATE_DIFF", 1, 0]);
@@ -706,5 +665,98 @@ describe("link read/write helpers", () => {
     assert.equal(isLinkConflict({ code: "23505" }), true);
     assert.equal(isLinkConflict({ message: "boom" }), false);
     assert.match(LINK_CONFLICT_MESSAGE, /already linked to another bank line/);
+  });
+});
+
+describe("matchStatementLines — name tie-break", () => {
+  const col = (id, name, extra = {}) => ({ id, account: "HDFC", date: "2026-03-05", amount: 1800, student_name: name, ...extra });
+  const cr = (seq, description) => ({ seq, date: "2026-03-05", deposit: 1800, withdrawal: 0, description, reference: "" });
+  const run = (lines, collections) => matchStatementLines(lines, "HDFC", { collections }, {});
+
+  test("links only when exactly one candidate's name is in the payer text (auto_name, name_confirmed)", () => {
+    const [r] = run(
+      [cr(1, "UPI/401/UPI/aboobeker12@okaxis/AXIS BANK")],
+      [col(1, "Sreeshma K"), col(2, "Aboobeker P"), col(3, "Mayiza")]
+    );
+    assert.equal(r.status, "matched");
+    assert.deepEqual(r.links, [{ bookKind: "collection", bookId: 2, source: "auto_name" }]);
+    assert.equal(r.reason, "name_confirmed");
+  });
+
+  test("two candidates that both match the payer -> review (name_ambiguous)", () => {
+    const [r] = run(
+      [cr(1, "UPI/401/UPI/amina9876@okaxis/SBI")],
+      [col(1, "Amina Rasheed"), col(2, "Amina Basheer")]
+    );
+    assert.equal(r.status, "review");
+    assert.equal(r.reason, "name_ambiguous");
+    assert.deepEqual(r.links, []);
+  });
+
+  test("a payer that matches nobody -> review (name_unknown)", () => {
+    const [r] = run([cr(1, "UPI/401/UPI/zzqxjw@okaxis/SBI")], [col(1, "Sreeshma K"), col(2, "Mayiza")]);
+    assert.equal(r.status, "review");
+    assert.equal(r.reason, "name_unknown");
+    assert.equal(r.candidates.length, 2);
+  });
+
+  test("a name token under 4 letters never matches", () => {
+    const [r] = run([cr(1, "UPI/401/UPI/ann0001@okaxis/SBI")], [col(1, "Ann"), col(2, "Bob")]);
+    assert.equal(r.status, "review");
+    assert.equal(r.reason, "name_unknown");
+  });
+
+  test("sibling case: one payer text names two students -> review, nothing linked", () => {
+    const [r] = run(
+      [cr(1, "UPI/401/UPI/rasheedfamily@okaxis/SBI")],
+      [col(1, "Rasheed Anas"), col(2, "Rasheed Hana")]
+    );
+    assert.equal(r.status, "review");
+    assert.equal(r.reason, "name_ambiguous");
+  });
+
+  test("an entry name-matched by two open lines is not linked to either", () => {
+    const res = run(
+      [cr(1, "UPI/1/UPI/sreeshma@okaxis/SBI"), cr(2, "UPI/2/UPI/sreeshma2@okaxis/SBI")],
+      [col(1, "Sreeshma K"), col(2, "Mayiza")]
+    );
+    res.forEach((r) => {
+      assert.equal(r.status, "review");
+      assert.deepEqual(r.links, []);
+    });
+  });
+
+  test("regression: three 1,800 lines vs three 1,800 fees with names present -> two name-confirmed, the unrelated one stays in review", () => {
+    const res = run(
+      [
+        cr(1, "UPI/1/UPI/sreeshmasreeshm@okaxis/AXIS BANK"),
+        cr(2, "UPI/2/UPI/aboobeker@oksbi/SBI"),
+        cr(3, "UPI/3/UPI/unrelatedhandle@ybl/SBI"),
+      ],
+      [col(1, "Sreeshma"), col(2, "Aboobeker"), col(3, "Mayiza")]
+    );
+    assert.deepEqual(res.map((r) => r.links[0]?.bookId ?? null), [1, 2, null]);
+    assert.equal(res[2].status, "review");
+    assert.equal(res[2].reason, "name_unknown");
+    assert.ok(res.slice(0, 2).every((r) => r.links[0].source === "auto_name"));
+  });
+
+  test("the same three lines with no names in the descriptions stay entirely in review", () => {
+    const res = run([cr(1, ""), cr(2, ""), cr(3, "")], [col(1, "Sreeshma"), col(2, "Aboobeker"), col(3, "Mayiza")]);
+    assert.ok(res.every((r) => r.status === "review" && r.links.length === 0));
+  });
+});
+
+describe("planRerun — uses the same passes", () => {
+  test("a re-run never guesses by order and never links a near-date entry", () => {
+    const data = { collections: [{ id: 1, account: "HDFC", date: "2026-04-01", amount: 900, student_name: "A B" }] };
+    const row = (id, seq, txn_date) => ({
+      id, seq, account: "HDFC", txn_date, deposit: 900, withdrawal: 0, description: "", reference: "", status: "unmatched",
+    });
+    const lines = [row(1, 1, "2026-04-02")];
+    const plan = planRerun(lines, lines, "HDFC", data);
+    assert.equal(plan[0].new_status, "review");
+    assert.equal(plan[0].reason, "near_date_suggestion");
+    assert.deepEqual(plan[0].links, []);
   });
 });
