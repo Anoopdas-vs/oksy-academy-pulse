@@ -59,7 +59,7 @@ export function ErrorBanner({ message, error, children, className = "", style })
   );
 }
 
-export function Input({ label, value, onChange, type = "text", placeholder, error, id, ...rest }) {
+export function Input({ label, value, onChange, type = "text", placeholder, error, hint, id, ...rest }) {
   const generatedId = useId();
   const inputId =
     id ||
@@ -79,6 +79,7 @@ export function Input({ label, value, onChange, type = "text", placeholder, erro
         className={error ? "field-invalid" : ""}
         {...rest}
       />
+      {hint && !error && <div className="field-hint">{hint}</div>}
       {error && <div className="field-error">{error}</div>}
     </div>
   );

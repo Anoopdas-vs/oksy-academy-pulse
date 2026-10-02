@@ -24,6 +24,7 @@ import {
   reconFilterCounts,
   reconRowMatchesFilter,
   RECON_FILTERS,
+  RESULT_LABEL,
   REASON_LABEL,
   BOOK_KIND_TAG,
 } from "../lib/reconcile.js";
@@ -432,6 +433,20 @@ function ReconcileView({
                     </button>
                   </div>
                 )}
+                <button
+                  className="button secondary small"
+                  disabled={busy || lines.length === 0}
+                  onClick={async () => {
+                    try {
+                      const { exportReconExcel } = await import("../lib/reconExport.js");
+                      await exportReconExcel({ statement: st, lines, allLines: bankLines, data, summary });
+                    } catch (err) {
+                      alert(`Could not build the Excel file: ${err?.message || err}`);
+                    }
+                  }}
+                >
+                  Export Excel
+                </button>
                 <button className="button secondary small" onClick={() => setOpenId(isOpen ? null : st.id)}>
                   {isOpen ? "Hide lines" : "Show lines"}
                 </button>
@@ -693,16 +708,6 @@ function LineActions({ ln, isAdmin, onClassify, onLink, onIgnoreLine, onUnmatchL
 }
 
 /* ----------------------- Excel-style review table ----------------------- */
-
-const RESULT_LABEL = {
-  MATCH: "Match",
-  GROUP: "Group",
-  DATE_DIFF: "Date diff",
-  AMOUNT_DIFF: "Amount diff",
-  REVIEW: "Review",
-  UNMATCHED: "Unmatched",
-  IGNORED: "Ignored",
-};
 
 const money2 = (n) => Number(n).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 

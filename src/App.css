@@ -3122,3 +3122,9 @@ tfoot td {
   font-size: 12px;
   margin-bottom: 8px;
 }
+
+.field-hint {
+  margin-top: 3px;
+  font-size: 10px;
+  color: var(--muted);
+}

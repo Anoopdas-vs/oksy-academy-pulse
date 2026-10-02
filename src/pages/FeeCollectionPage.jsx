@@ -6,6 +6,7 @@ import { usePagedList } from "../lib/usePagedList.js";
 import { downloadTemplate } from "../lib/templates.js";
 import { outstanding as outstandingFor, creditBalance as creditFor } from "../lib/fees.js";
 import StudentPicker from "../components/StudentPicker.jsx";
+import { validateBankReference, normalizeBankReference } from "../lib/validation.js";
 
 const ACCOUNTS = ["HDFC", "ICICI", "Cash", "Healthcare"];
 const TYPES = ["Registration Fee", "Course Fee", "Exam Fee", "Other Fee"];
@@ -127,6 +128,12 @@ export default function FeeCollectionPage({
               <Input label="Amount" type="number" min="0.01" step="0.01" value={form.amount} onChange={(v) => set({ amount: v })} required />
             </div>
             <Input label="Reference No." value={form.reference} onChange={(v) => set({ reference: v })} />
+            <Input
+              label="UTR / Reference no"
+              value={form.bank_reference ?? ""}
+              onChange={(v) => set({ bank_reference: v })}
+              hint="UPI/bank reference number (e.g. 534608284353). Used to match the bank statement automatically."
+            />
             <div className="info-box">
               {form.account === "Healthcare" ? (
                 <>
@@ -277,10 +284,19 @@ function EditCollectionForm({ row, busy, onCancel, onSave }) {
     account: row.account || "HDFC",
     amount: row.amount,
     reference: row.reference || "",
+    bank_reference: row.bank_reference || "",
   });
+  const [refError, setRefError] = useState("");
   const set = (p) => setF({ ...f, ...p });
+  const submit = (e) => {
+    e.preventDefault();
+    const problem = validateBankReference(f.bank_reference, row.bank_reference);
+    setRefError(problem);
+    if (problem) return;
+    onSave({ ...f, bank_reference: normalizeBankReference(f.bank_reference) });
+  };
   return (
-    <form className="form-grid" onSubmit={(e) => { e.preventDefault(); onSave(f); }}>
+    <form className="form-grid" onSubmit={submit}>
       <Input label="Date" type="date" value={f.date} onChange={(v) => set({ date: v })} required />
       <div className="field">
         <label>Type</label>
@@ -296,6 +312,13 @@ function EditCollectionForm({ row, busy, onCancel, onSave }) {
       </div>
       <Input label="Amount" type="number" min="0.01" step="0.01" value={f.amount} onChange={(v) => set({ amount: v })} required />
       <Input label="Reference No." value={f.reference} onChange={(v) => set({ reference: v })} />
+      <Input
+        label="UTR / Reference no"
+        value={f.bank_reference}
+        onChange={(v) => set({ bank_reference: v })}
+        error={refError}
+        hint="UPI/bank reference number (e.g. 534608284353). Used to match the bank statement automatically."
+      />
       <div className="form-actions">
         <button type="button" className="button secondary" onClick={onCancel} disabled={busy}>Cancel</button>
         <button type="submit" className="button primary" disabled={busy}>{busy ? "Saving..." : "Save changes"}</button>

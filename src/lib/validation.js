@@ -105,6 +105,29 @@ export function validateMoneyRow({ date, amount, account }) {
   return problems;
 }
 
+// -------- Fee form: UTR / Reference no (collections.bank_reference) --------
+// Free text kept as typed (a pasted full bank line is fine). New values are
+// capped at 200 characters; a value that is unchanged from what is already
+// stored is always accepted, because bank reconciliation writes up to 500
+// characters of statement text into this column and an unrelated edit of
+// that fee must still save.
+export const BANK_REFERENCE_MAX = 200;
+
+export const normalizeBankReference = (v) => {
+  const t = String(v ?? "").trim();
+  return t === "" ? null : t;
+};
+
+// Returns "" when valid, otherwise the message to show under the field.
+export function validateBankReference(v, original = null) {
+  const next = normalizeBankReference(v);
+  if (next === null || next === normalizeBankReference(original)) return "";
+  if (next.length > BANK_REFERENCE_MAX) {
+    return `UTR / Reference no can be at most ${BANK_REFERENCE_MAX} characters.`;
+  }
+  return "";
+}
+
 // -------- Student personal / contact fields (migration 24) --------
 // These mirror the CHECK constraints on public.students so the form catches
 // problems before the database does; the constraints remain the backstop.

@@ -73,6 +73,8 @@ import {
   isPositiveNumber,
   isValidStatus,
   validateMoneyRow,
+  validateBankReference,
+  normalizeBankReference,
   validateStudentPersonal,
   preparePersonalFields,
   STUDENT_PERSONAL_FIELDS,
@@ -355,6 +357,7 @@ function AppShell() {
     account: "HDFC",
     amount: "",
     reference: "",
+    bank_reference: "",
   };
   const [collectionForm, setCollectionForm] = useState(emptyCollectionForm);
 
@@ -665,6 +668,11 @@ function AppShell() {
       setCollectionFormError("Amount must be greater than zero.");
       return;
     }
+    const bankRefProblem = validateBankReference(collectionForm.bank_reference);
+    if (bankRefProblem) {
+      setCollectionFormError(bankRefProblem);
+      return;
+    }
 
     setSavingCollection(true);
     try {
@@ -678,6 +686,7 @@ function AppShell() {
           account: collectionForm.account,
           amount,
           reference: collectionForm.reference,
+          bank_reference: normalizeBankReference(collectionForm.bank_reference),
         },
         profile.id
       );

@@ -913,6 +913,16 @@ export function buildReconRows(lines, ledgerByKey = new Map(), hints = new Map()
   });
 }
 
+export const RESULT_LABEL = {
+  MATCH: "Match",
+  GROUP: "Group",
+  DATE_DIFF: "Date diff",
+  AMOUNT_DIFF: "Amount diff",
+  REVIEW: "Review",
+  UNMATCHED: "Unmatched",
+  IGNORED: "Ignored",
+};
+
 export const RECON_FILTERS = [
   { key: "all", label: "All" },
   { key: "match", label: "Match" },
