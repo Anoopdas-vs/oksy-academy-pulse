@@ -224,18 +224,18 @@ export const isOrderAssumed = (line) =>
   line?.status === "matched" && Number(line.match_score) === ORDER_ASSUMED_SCORE;
 
 const OPEN_STATUSES = new Set(["review", "unmatched"]);
-// Entries already held by stored lines. A line's `links` (see attachLinks)
-// win; lines without them fall back to the legacy match_kind/match_id pair.
-const usedKeysOf = (lines, account) =>
-  lines
-    .filter((l) => l.account === account && (l.status === "matched" || l.status === "classified"))
-    .flatMap((l) =>
-      l.links?.length
-        ? l.links.map((k) => `${k.bookKind}:${k.bookId}`)
-        : l.match_kind && l.match_id != null
-          ? [`${l.match_kind}:${l.match_id}`]
-          : []
-    );
+// Entries ("kind:id") already linked to ANY stored bank line -- any
+// statement, any account, any status -- because the database allows each
+// book entry only one bank line. A line's `links` (see attachLinks) win;
+// lines without them fall back to the legacy match_kind/match_id pair.
+const usedKeysOf = (lines) =>
+  lines.flatMap((l) =>
+    l.links?.length
+      ? l.links.map((k) => `${k.bookKind}:${k.bookId}`)
+      : (l.status === "matched" || l.status === "classified") && l.match_kind && l.match_id != null
+        ? [`${l.match_kind}:${l.match_id}`]
+        : []
+  );
 const asAutoLine = (l) => ({
   date: l.txn_date,
   description: l.description,
@@ -291,7 +291,7 @@ function rematchOpen(statementLines, allLines, account, data) {
     open.map((l) => ({ ...asAutoLine(l), id: l.id, seq: l.seq })),
     account,
     data,
-    { usedKeys: usedKeysOf(allLines, account) }
+    { usedKeys: usedKeysOf(allLines) }
   );
   return { open, results };
 }
@@ -321,7 +321,7 @@ function subsetsSumming(entries, total, maxSize, valueOf = (e) => Math.round(Mat
 //   -> [{ lines: [line...], total, options: [[entry...]...] }]
 export function suggestSplitGroups(statementLines, allLines, account, data, dayWindow = 4) {
   const ledger = accountLedger(account, data);
-  const used = new Set(usedKeysOf(allLines, account));
+  const used = new Set(usedKeysOf(allLines));
   const open = statementLines.filter(
     (l) => OPEN_STATUSES.has(l.status) && !rankCandidates(asAutoLine(l), ledger, { used, dayWindow }).length
   );
@@ -1056,7 +1056,7 @@ export function buildManualLinkPayload(lineId, entries) {
 // Entries of the statement's account dated inside its period that no bank
 // line of that account links to: in the books, not in the statement.
 export function bookOnlyEntries(statement, allLines, data) {
-  const used = new Set(usedKeysOf(allLines, statement.account));
+  const used = new Set(usedKeysOf(allLines));
   const labels = ledgerByKeyOf(data);
   const from = statement.period_start ? isoDay(statement.period_start) : null;
   const to = statement.period_end ? isoDay(statement.period_end) : null;
@@ -1069,5 +1069,8 @@ export function bookOnlyEntries(statement, allLines, data) {
     .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0) || a.kind.localeCompare(b.kind) || Number(a.id) - Number(b.id));
 }
 
-// Entries ("kind:id") already linked to any stored bank line of `account`.
-export const linkedKeys = (allLines, account) => usedKeysOf(allLines, account);
+// Entries ("kind:id") already linked to any stored bank line (see usedKeysOf).
+export const linkedKeys = (allLines) => usedKeysOf(allLines);
+
+// True when an entry already has a recorded bank_reference (never overwrite).
+export const hasBankReference = (entry) => String(entry?.bank_reference ?? "").trim() !== "";

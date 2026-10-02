@@ -33,6 +33,7 @@ import {
   buildManualLinkPayload,
   bookOnlyEntries,
   linkedKeys,
+  hasBankReference,
   LINK_CONFLICT_MESSAGE,
 } from "./reconcile.js";
 
@@ -1000,5 +1001,34 @@ describe("manual link popup helpers", () => {
       { account: "HDFC", status: "matched", links: [{ bookKind: "collection", bookId: 1 }, { bookKind: "collection", bookId: 3 }] },
     ];
     assert.deepEqual(linkedKeys(lines, "HDFC").sort(), ["collection:1", "collection:3"]);
+  });
+});
+
+describe("phase 4 fixes", () => {
+  test("hasBankReference: only a non-blank value counts, so fill-only-if-empty never overwrites", () => {
+    assert.equal(hasBankReference({ bank_reference: "UPI/123/x" }), true);
+    assert.equal(hasBankReference({ bank_reference: "" }), false);
+    assert.equal(hasBankReference({ bank_reference: "   " }), false);
+    assert.equal(hasBankReference({ bank_reference: null }), false);
+    assert.equal(hasBankReference({}), false);
+    assert.equal(hasBankReference(undefined), false);
+  });
+
+  test("book-only treats an entry linked from ANOTHER statement or another account as linked", () => {
+    const data = {
+      collections: [
+        { id: 1, account: "HDFC", date: "2026-03-05", amount: 100, student_name: "A" },
+        { id: 2, account: "HDFC", date: "2026-03-06", amount: 200, student_name: "B" },
+      ],
+      expenses: [],
+      transfers: [{ id: 7, from_account: "Cash", to_account: "HDFC", date: "2026-03-07", amount: 500 }],
+    };
+    const statement = { id: 10, account: "HDFC", period_start: "2026-03-01", period_end: "2026-03-31" };
+    const otherStatementLine = { id: 50, statement_id: 11, account: "HDFC", status: "matched", links: [{ bookKind: "collection", bookId: 1 }] };
+    const otherAccountLine = { id: 60, statement_id: 12, account: "ICICI", status: "matched", links: [{ bookKind: "transfer", bookId: 7 }] };
+    const out = bookOnlyEntries(statement, [otherStatementLine, otherAccountLine], data).map((e) => e.key);
+    assert.deepEqual(out, ["collection:2"]);
+    // the link popup excludes the same entries
+    assert.deepEqual(linkedKeys([otherStatementLine, otherAccountLine]).sort(), ["collection:1", "transfer:7"]);
   });
 });

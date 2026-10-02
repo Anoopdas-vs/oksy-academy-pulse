@@ -17,7 +17,7 @@ import {
   studentFeeTotals,
 } from "./lib/fees.js";
 import { parseBankStatement } from "./lib/bankStatement.js";
-import { attachLinks, buildManualLinkPayload, linksToLinePatch, matchStatementLines } from "./lib/reconcile.js";
+import { attachLinks, buildManualLinkPayload, hasBankReference, linksToLinePatch, matchStatementLines } from "./lib/reconcile.js";
 import { getAccess } from "./lib/access.js";
 import {
   fetchStudents,
@@ -850,6 +850,20 @@ function AppShell() {
   const bankReferenceText = (line) =>
     [line.description, line.reference].filter(Boolean).join(" ").trim().slice(0, 500);
 
+  // Stamp the bank line's text onto a linked entry ONLY while the entry's
+  // bank_reference is empty -- a value someone already recorded is never
+  // overwritten here (replacing references is reserved for the Sync with
+  // preview + undo step).
+  const fillBankReference = async (kind, id, line) => {
+    const list = kind === "collection" ? collections : kind === "expense" ? expenses : transfers;
+    const entry = list.find((r) => String(r.id) === String(id));
+    if (!entry || hasBankReference(entry)) return;
+    const patch = { bank_reference: bankReferenceText(line) };
+    if (kind === "collection") await updateCollection(id, patch);
+    else if (kind === "expense") await updateExpense(id, patch, profile.id);
+    else if (kind === "transfer") await updateTransfer(id, patch);
+  };
+
   // Parse an uploaded statement, auto-match its lines against existing
   // collections / expenses / transfers, and store it.
   const uploadBankStatement = async (account, file) => {
@@ -904,21 +918,9 @@ function AppShell() {
       // description/reference written onto them as a permanent audit trail
       // (see the "Fix Bank Reconciliation Matching Logic" brief) -- same as
       // a manual match/classification does below.
-      const bankRefUpdaters = {
-        collection: (id, patch) => updateCollection(id, patch),
-        expense: (id, patch) => updateExpense(id, patch, profile.id),
-        transfer: (id, patch) => updateTransfer(id, patch),
-      };
-      const bankRefWrites = matchedLines.flatMap(({ ln, m }) =>
-        m.links.filter((k) => bankRefUpdaters[k.bookKind]).map((k) => ({ ln, k }))
+      await Promise.all(
+        matchedLines.flatMap(({ ln, m }) => m.links.map((k) => fillBankReference(k.bookKind, k.bookId, ln)))
       );
-      if (bankRefWrites.length) {
-        await Promise.all(
-          bankRefWrites.map(({ ln, k }) =>
-            bankRefUpdaters[k.bookKind](k.bookId, { bank_reference: bankReferenceText(ln) })
-          )
-        );
-      }
 
       await Promise.all([loadData(), loadBankData()]);
     } catch (err) {
@@ -936,11 +938,6 @@ function AppShell() {
     setBankBusy(true);
     setDataError("");
     try {
-      const bankRefUpdaters = {
-        collection: (id, patch) => updateCollection(id, patch),
-        expense: (id, patch) => updateExpense(id, patch, profile.id),
-        transfer: (id, patch) => updateTransfer(id, patch),
-      };
       for (const c of changes) {
         const matched = c.new_status === "matched";
         const patch = matched
@@ -949,11 +946,7 @@ function AppShell() {
         const applied = await updateBankStatementLineIfOpen(c.line.id, patch);
         if (applied && matched) {
           await saveMatchLinks(c.line.id, c.links, "auto_exact", { userId: profile.id });
-          await Promise.all(
-            c.links
-              .filter((k) => bankRefUpdaters[k.bookKind])
-              .map((k) => bankRefUpdaters[k.bookKind](k.bookId, { bank_reference: bankReferenceText(c.line) }))
-          );
+          await Promise.all(c.links.map((k) => fillBankReference(k.bookKind, k.bookId, c.line)));
         }
       }
       await Promise.all([loadData(), loadBankData()]);
@@ -971,14 +964,7 @@ function AppShell() {
     try {
       const payload = buildManualLinkPayload(line.id, entries);
       await saveMatchLinks(payload.lineId, payload.links, payload.source, { status: payload.status });
-      const bankRefUpdaters = {
-        collection: (id, patch) => updateCollection(id, patch),
-        expense: (id, patch) => updateExpense(id, patch, profile.id),
-        transfer: (id, patch) => updateTransfer(id, patch),
-      };
-      await Promise.all(
-        payload.links.map((k) => bankRefUpdaters[k.bookKind](k.bookId, { bank_reference: bankReferenceText(line) }))
-      );
+      await Promise.all(payload.links.map((k) => fillBankReference(k.bookKind, k.bookId, line)));
       await Promise.all([loadData(), loadBankData()]);
     } finally {
       setBankBusy(false);
@@ -996,16 +982,10 @@ function AppShell() {
 
       // Link to a record that already exists (no new record created).
       if (input.kind === "link") {
-        if (input.linkKind === "collection") {
-          await updateCollection(input.linkId, { bank_reference: bankReferenceText(line) });
-        } else if (input.linkKind === "expense") {
-          await updateExpense(input.linkId, { bank_reference: bankReferenceText(line) }, profile.id);
-        } else if (input.linkKind === "transfer") {
-          await updateTransfer(input.linkId, { bank_reference: bankReferenceText(line) });
-        }
         await saveMatchLinks(line.id, [{ bookKind: input.linkKind, bookId: input.linkId }], "manual", {
           userId: profile.id,
         });
+        await fillBankReference(input.linkKind, input.linkId, line);
         await Promise.all([loadData(), loadBankData()]);
         return;
       }

@@ -541,7 +541,7 @@ function ReconcileView({
           line={linking.line}
           account={linking.account}
           data={data}
-          usedKeys={linkedKeys(bankLines, linking.account)}
+          usedKeys={linkedKeys(bankLines)}
           onClose={() => setLinking(null)}
           onConfirm={(entries) => onLinkLine(linking.line, entries)}
         />
