@@ -1,21 +1,17 @@
 import React, { Suspense, lazy, useMemo, useState } from "react";
-import { createPortal } from "react-dom";
 import { ErrorBanner, Input, Modal, MetricCard } from "../components/ui.jsx";
 import { formatMoney } from "../lib/format.js";
-import StudentPicker from "../components/StudentPicker.jsx";
 import { SearchBox, Pager } from "../components/SearchPager.jsx";
 import { usePagedList } from "../lib/usePagedList.js";
 import { downloadTemplate } from "../lib/templates.js";
-import LinkEntryModal from "../components/LinkEntryModal.jsx";
 
 // Loaded on first use so they stay out of the page chunk until opened.
+const MatchLineModal = lazy(() => import("../components/MatchLineModal.jsx"));
 const SyncBankModal = lazy(() => import("../components/SyncBankModal.jsx"));
 const SyncHistoryModal = lazy(() => import("../components/SyncHistoryModal.jsx"));
 import {
   reconciliationSummary,
   matchKindLabel,
-  matchedRecordDetail,
-  reviewCandidatesDetail,
   bankReferenceMismatches,
   isOrderAssumed,
   planRerun,
@@ -32,7 +28,6 @@ import {
   REASON_LABEL,
   BOOK_KIND_TAG,
 } from "../lib/reconcile.js";
-import { outstanding } from "../lib/fees.js";
 
 const ACCOUNTS = ["HDFC", "ICICI", "Cash", "Healthcare"];
 const BANK_ACCOUNTS = ["HDFC", "ICICI"];
@@ -346,12 +341,10 @@ function ReconcileView({
 }) {
   const [account, setAccount] = useState("ICICI");
   const [openId, setOpenId] = useState(null);
-  const [classifying, setClassifying] = useState(null); // a line row
-  const [linking, setLinking] = useState(null); // { line, account } for the Link entry popup
+  const [matching, setMatching] = useState(null); // { line, account } for the Match popup
   const [syncing, setSyncing] = useState(null); // { statement, lines } for the Sync to books preview
   const [showSyncHistory, setShowSyncHistory] = useState(false);
   const [rerun, setRerun] = useState(null); // { statementId, changes } dry-run awaiting confirmation
-  const [tableView, setTableView] = useState("new"); // "new" review table | "classic" table
 
   const linesByStatement = useMemo(() => {
     const map = new Map();
@@ -438,16 +431,6 @@ function ReconcileView({
                 <p>{st.file_name}</p>
               </div>
               <div className="header-actions">
-                {isOpen && (
-                  <div className="subtab-switch recon-view-switch" role="group" aria-label="Table view">
-                    <button className={tableView === "new" ? "subtab active" : "subtab"} onClick={() => setTableView("new")}>
-                      New view
-                    </button>
-                    <button className={tableView === "classic" ? "subtab active" : "subtab"} onClick={() => setTableView("classic")}>
-                      Classic view
-                    </button>
-                  </div>
-                )}
                 <button
                   className="button secondary small"
                   disabled={busy || lines.length === 0}
@@ -470,9 +453,6 @@ function ReconcileView({
                       onClick={() => setSyncing({ statement: st, lines })}
                     >
                       Sync to books
-                    </button>
-                    <button className="button ghost small" onClick={() => setShowSyncHistory(true)}>
-                      Sync history
                     </button>
                   </>
                 )}
@@ -531,7 +511,7 @@ function ReconcileView({
               />
             </div>
 
-            {isOpen && tableView === "new" && (
+            {isOpen && (
               <ReconGrid
                 lines={lines}
                 allLines={bankLines}
@@ -539,57 +519,14 @@ function ReconcileView({
                 statement={st}
                 data={data}
                 isAdmin={isAdmin}
-                onClassify={setClassifying}
-                onLink={(ln) => setLinking({ line: ln, account: st.account })}
+                onMatch={(ln) => setMatching({ line: ln, account: st.account })}
                 onIgnoreLine={onIgnoreLine}
                 onUnmatchLine={onUnmatchLine}
               />
             )}
-            {isOpen && tableView === "classic" && (
-              <table>
-                <thead>
-                  <tr>
-                    <th>#</th><th>Date</th><th>Description</th>
-                    <th>Withdrawal</th><th>Deposit</th><th>Status</th><th></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {lines.map((ln) => (
-                    <tr key={ln.id} className={ln.status === "unmatched" || ln.status === "review" ? "row-open" : ""}>
-                      <td>{ln.seq}</td>
-                      <td>{ln.txn_date}</td>
-                      <td className="desc-cell">{ln.description}</td>
-                      <td className="amount-negative">{ln.withdrawal ? formatMoney(ln.withdrawal) : ""}</td>
-                      <td className="amount-positive">{ln.deposit ? formatMoney(ln.deposit) : ""}</td>
-                      <td><StatusTag line={ln} data={data} students={students} /></td>
-                      <td className="row-actions">
-                        <LineActions
-                          ln={ln}
-                          isAdmin={isAdmin}
-                          onClassify={setClassifying}
-                          onIgnoreLine={onIgnoreLine}
-                          onUnmatchLine={onUnmatchLine}
-                        />
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
           </div>
         );
       })}
-
-      {linking && (
-        <LinkEntryModal
-          line={linking.line}
-          account={linking.account}
-          data={data}
-          usedKeys={linkedKeys(bankLines, linking.account)}
-          onClose={() => setLinking(null)}
-          onConfirm={(entries) => onLinkLine(linking.line, entries)}
-        />
-      )}
 
       <Suspense fallback={null}>
         {syncing && (
@@ -601,30 +538,33 @@ function ReconcileView({
             onClose={() => setSyncing(null)}
             onApply={onSyncRun}
             onUndo={onUndoSync}
+            onOpenHistory={() => setShowSyncHistory(true)}
+          />
+        )}
+        {matching && (
+          <MatchLineModal
+            line={matching.line}
+            account={matching.account}
+            data={data}
+            students={students}
+            busy={busy}
+            usedKeys={linkedKeys(bankLines, matching.account)}
+            onClose={() => setMatching(null)}
+            onLink={(entries) => onLinkLine(matching.line, entries)}
+            onCreate={async (input) => {
+              try {
+                await onClassifyLine(matching.line, input);
+                setMatching(null);
+              } catch {
+                /* error is surfaced by the page-level banner */
+              }
+            }}
           />
         )}
         {showSyncHistory && (
           <SyncHistoryModal onClose={() => setShowSyncHistory(false)} onLoadRuns={onLoadSyncRuns} onUndo={onUndoSync} />
         )}
       </Suspense>
-
-      {classifying && (
-        <ClassifyModal
-          line={classifying}
-          students={students}
-          data={data}
-          busy={busy}
-          onClose={() => setClassifying(null)}
-          onSubmit={async (input) => {
-            try {
-              await onClassifyLine(classifying, input);
-              setClassifying(null);
-            } catch {
-              /* error is surfaced by the page-level banner */
-            }
-          }}
-        />
-      )}
     </div>
   );
 }
@@ -709,22 +649,17 @@ function SplitSuggestions({ lines, allLines, account, data }) {
   );
 }
 
-// Classify / Resolve / Ignore / Un-ignore / Unmatch for one stored line.
-// Shared by the classic table and the review table so both behave the same.
-function LineActions({ ln, isAdmin, onClassify, onLink, onIgnoreLine, onUnmatchLine }) {
+// Row actions for one stored line: Match + Ignore (open lines), Un-ignore
+// (ignored), Unmatch (linked). Admin only.
+function LineActions({ ln, isAdmin, onMatch, onIgnoreLine, onUnmatchLine }) {
   if (!isAdmin) return null;
   return (
     <>
       {(ln.status === "unmatched" || ln.status === "review") && (
         <>
-          <button className="button secondary small" onClick={() => onClassify(ln)}>
-            {ln.status === "review" ? "Resolve" : "Classify"}
+          <button className="button secondary small" onClick={() => onMatch(ln)}>
+            Match
           </button>
-          {onLink && (
-            <button className="button secondary small" onClick={() => onLink(ln)}>
-              Link entry
-            </button>
-          )}
           <button className="button ghost small" onClick={() => onIgnoreLine(ln, true)}>
             Ignore
           </button>
@@ -759,7 +694,7 @@ const money2 = (n) => Number(n).toLocaleString("en-IN", { minimumFractionDigits:
 
 // One row per bank line; a group shows all its book entries in that row.
 // Single-tenant: one academy's books, no tenant scoping.
-function ReconGrid({ lines, allLines, account, statement, data, isAdmin, onClassify, onLink, onIgnoreLine, onUnmatchLine }) {
+function ReconGrid({ lines, allLines, account, statement, data, isAdmin, onMatch, onIgnoreLine, onUnmatchLine }) {
   const [filter, setFilter] = useState("all");
   const ledger = useMemo(
     () => ledgerByKeyOf(data),
@@ -778,16 +713,18 @@ function ReconGrid({ lines, allLines, account, statement, data, isAdmin, onClass
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [statement, allLines, data.collections, data.expenses, data.transfers]
   );
-  const shown = filter === "book_only" ? [] : rows.filter((r) => reconRowMatchesFilter(r, filter));
+  // The Ignored chip is hidden at zero, so don't stay filtered on it.
+  const activeFilter = filter === "ignored" && counts.ignored === 0 ? "all" : filter;
+  const shown = activeFilter === "book_only" ? [] : rows.filter((r) => reconRowMatchesFilter(r, activeFilter));
 
   return (
     <>
       <div className="recon-chips" role="group" aria-label="Filter lines">
-        {RECON_FILTERS.map((f) => (
+        {RECON_FILTERS.filter((f) => f.key !== "ignored" || counts.ignored > 0).map((f) => (
           <button
             key={f.key}
             type="button"
-            className={filter === f.key ? "recon-chip active" : "recon-chip"}
+            className={activeFilter === f.key ? "recon-chip active" : "recon-chip"}
             onClick={() => setFilter(f.key)}
           >
             {f.label} <b>{counts[f.key]}</b>
@@ -795,13 +732,13 @@ function ReconGrid({ lines, allLines, account, statement, data, isAdmin, onClass
         ))}
         <button
           type="button"
-          className={filter === "book_only" ? "recon-chip active" : "recon-chip"}
+          className={activeFilter === "book_only" ? "recon-chip active" : "recon-chip"}
           onClick={() => setFilter("book_only")}
         >
           Book only <b>{bookOnly.length}</b>
         </button>
       </div>
-      {filter === "book_only" ? (
+      {activeFilter === "book_only" ? (
         <BookOnlyTable entries={bookOnly} />
       ) : (
       <div className="table-scroll">
@@ -822,8 +759,7 @@ function ReconGrid({ lines, allLines, account, statement, data, isAdmin, onClass
                 key={r.lineId}
                 r={r}
                 isAdmin={isAdmin}
-                onClassify={onClassify}
-                onLink={onLink}
+                onMatch={onMatch}
                 onIgnoreLine={onIgnoreLine}
                 onUnmatchLine={onUnmatchLine}
               />
@@ -874,7 +810,7 @@ function BookOnlyTable({ entries }) {
   );
 }
 
-function ReconRow({ r, isAdmin, onClassify, onLink, onIgnoreLine, onUnmatchLine }) {
+function ReconRow({ r, isAdmin, onMatch, onIgnoreLine, onUnmatchLine }) {
   const linked = r.links.length > 0;
   const sources = new Set(r.links.map((k) => k.source));
   const sug = !linked ? r.suggestion : null;
@@ -919,124 +855,12 @@ function ReconRow({ r, isAdmin, onClassify, onLink, onIgnoreLine, onUnmatchLine 
         <LineActions
           ln={r.line}
           isAdmin={isAdmin}
-          onClassify={onClassify}
-          onLink={onLink}
+          onMatch={onMatch}
           onIgnoreLine={onIgnoreLine}
           onUnmatchLine={onUnmatchLine}
         />
       </td>
     </tr>
-  );
-}
-
-function StatusTag({ line, data, students }) {
-  const { status } = line;
-  const [tip, setTip] = useState(null); // { x, y, flip } | null
-
-  if (status === "ignored") return <span className="mini-tag">Ignored</span>;
-  if (status === "review") return <ReviewTag line={line} data={data} students={students} />;
-  if (status !== "matched" && status !== "classified") {
-    return <span className="mini-tag warn">Unmatched</span>;
-  }
-
-  const verb = status === "matched" ? "Matched" : "Added";
-  const kindLabel = matchKindLabel(line.match_kind);
-  const detail = matchedRecordDetail(line, data, students);
-  const assumed = isOrderAssumed(line);
-
-  const show = (e) => {
-    if (!detail) return;
-    const r = e.currentTarget.getBoundingClientRect();
-    const flip = r.bottom > window.innerHeight - 200;
-    // Keep the ~320px card inside the viewport when the tag sits near an edge.
-    const x = Math.max(8, Math.min(r.left, window.innerWidth - 332));
-    setTip({ x, y: flip ? r.top : r.bottom, flip });
-  };
-  const hide = () => setTip(null);
-
-  return (
-    <span
-      className={`mini-tag ${assumed ? "warn" : "ok"}${detail ? " match-tag" : ""}`}
-      onMouseEnter={show}
-      onMouseLeave={hide}
-      onFocus={show}
-      onBlur={hide}
-      tabIndex={detail ? 0 : undefined}
-    >
-      {verb} - {kindLabel}{assumed ? " (assumed by order)" : ""}
-      {detail && tip &&
-        createPortal(
-          <span
-            className="match-tip"
-            style={{
-              left: tip.x,
-              top: tip.flip ? undefined : tip.y + 6,
-              bottom: tip.flip ? window.innerHeight - tip.y + 6 : undefined,
-            }}
-          >
-            <span className="match-tip-title">{detail.title}</span>
-            {detail.rows.map((row) => (
-              <span className="match-tip-row" key={row.k}>
-                <span className="match-tip-k">{row.k}</span>
-                <span className="match-tip-v">{row.v}</span>
-              </span>
-            ))}
-          </span>,
-          document.body
-        )}
-    </span>
-  );
-}
-
-// Tag for a bank line the auto-matcher deliberately refused to guess on --
-// two or more app records share the amount and land on the same date, and
-// the payer-identity signal wasn't decisive enough to pick between them.
-// Hovering shows the tied candidates; "Resolve" (in the row actions) opens
-// the same Classify modal used for unmatched lines to confirm one by hand.
-function ReviewTag({ line, data, students }) {
-  const [tip, setTip] = useState(null);
-  const detail = reviewCandidatesDetail(line, data, students);
-
-  const show = (e) => {
-    if (!detail) return;
-    const r = e.currentTarget.getBoundingClientRect();
-    const flip = r.bottom > window.innerHeight - 200;
-    const x = Math.max(8, Math.min(r.left, window.innerWidth - 332));
-    setTip({ x, y: flip ? r.top : r.bottom, flip });
-  };
-  const hide = () => setTip(null);
-
-  return (
-    <span
-      className={`mini-tag warn${detail ? " match-tag" : ""}`}
-      onMouseEnter={show}
-      onMouseLeave={hide}
-      onFocus={show}
-      onBlur={hide}
-      tabIndex={detail ? 0 : undefined}
-    >
-      Needs review
-      {detail && tip &&
-        createPortal(
-          <span
-            className="match-tip"
-            style={{
-              left: tip.x,
-              top: tip.flip ? undefined : tip.y + 6,
-              bottom: tip.flip ? window.innerHeight - tip.y + 6 : undefined,
-            }}
-          >
-            <span className="match-tip-title">{detail.title}</span>
-            {detail.rows.map((row, i) => (
-              <span className="match-tip-row" key={`${row.k}-${i}`}>
-                <span className="match-tip-k">{row.k}</span>
-                <span className="match-tip-v">{row.v}</span>
-              </span>
-            ))}
-          </span>,
-          document.body
-        )}
-    </span>
   );
 }
 
@@ -1085,155 +909,5 @@ function MismatchReport({ data }) {
         </table>
       )}
     </div>
-  );
-}
-
-function ClassifyModal({ line, students, data, busy, onClose, onSubmit }) {
-  const isDeposit = Number(line.deposit) > 0;
-  const amount = isDeposit ? Number(line.deposit) : Number(line.withdrawal);
-  const [kind, setKind] = useState(isDeposit ? "collection" : "expense");
-  const [studentId, setStudentId] = useState("");
-  const [type, setType] = useState("Course Fee");
-  const [category, setCategory] = useState("Bank Charge");
-  const [description, setDescription] = useState(line.description || "");
-  const [otherAccount, setOtherAccount] = useState(line.account === "ICICI" ? "HDFC" : "ICICI");
-  const [purpose, setPurpose] = useState(line.description || (isDeposit ? "Cash deposit" : "Transfer"));
-  const [linkId, setLinkId] = useState("");
-
-  const matchedStudent = students.find(
-    (s) => s.id === studentId || s.name.toLowerCase() === String(studentId).toLowerCase()
-  );
-  const studentBalance = matchedStudent
-    ? outstanding(
-        matchedStudent,
-        (data.collections || [])
-          .filter((c) => c.student_id === matchedStudent.id)
-          .reduce((s, c) => s + Number(c.amount || 0), 0)
-      )
-    : null;
-
-  // Candidate existing records to link this line to (same account, right
-  // direction, unmatched), closest amount first.
-  const candidates = (isDeposit
-    ? (data.collections || []).filter((c) => c.account === line.account)
-    : (data.expenses || []).filter((e) => e.account === line.account)
-  )
-    .map((r) => ({
-      id: r.id,
-      linkKind: isDeposit ? "collection" : "expense",
-      label: isDeposit
-        ? `${r.date} · ${r.student_name} · ${formatMoney(r.amount)}`
-        : `${r.date} · ${r.category} · ${formatMoney(r.amount)}`,
-      diff: Math.abs(Number(r.amount) - amount),
-    }))
-    .sort((a, b) => a.diff - b.diff)
-    .slice(0, 25);
-
-  const submit = (e) => {
-    e.preventDefault();
-    if (kind === "link") {
-      const c = candidates.find((x) => String(x.id) === String(linkId));
-      if (c) onSubmit({ kind: "link", linkKind: c.linkKind, linkId: c.id });
-    } else if (kind === "collection") onSubmit({ kind, studentId, type });
-    else if (kind === "expense") onSubmit({ kind, category, description });
-    else onSubmit({ kind, otherAccount, purpose });
-  };
-
-  return (
-    <Modal title="Classify statement line" onClose={onClose}>
-      <form className="form-grid" onSubmit={submit}>
-        <div className="classify-summary">
-          <span>{line.txn_date}</span>
-          <strong>{formatMoney(amount)} {isDeposit ? "in" : "out"}</strong>
-          <span className="desc-cell">{line.description}</span>
-        </div>
-
-        <div className="field">
-          <label>Record as</label>
-          <select value={kind} onChange={(e) => setKind(e.target.value)}>
-            <option value="collection">New fee collection</option>
-            <option value="expense">New expense</option>
-            <option value="transfer">New transfer</option>
-            <option value="link">Link to an existing record</option>
-          </select>
-        </div>
-
-        {kind === "link" && (
-          <div className="field">
-            <label>Existing {isDeposit ? "fee collection" : "expense"} ({line.account})</label>
-            <select value={linkId} onChange={(e) => setLinkId(e.target.value)} required>
-              <option value="">— choose —</option>
-              {candidates.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.label}{c.diff === 0 ? "  ✓ exact" : ""}
-                </option>
-              ))}
-            </select>
-          </div>
-        )}
-
-        {kind === "collection" && (
-          <>
-            <div className="field">
-              <label>Student</label>
-              <StudentPicker students={students} value={studentId} onChange={setStudentId} required />
-            </div>
-            <div className="field">
-              <label>Type</label>
-              <select value={type} onChange={(e) => setType(e.target.value)}>
-                <option>Registration Fee</option>
-                <option>Course Fee</option>
-                <option>Exam Fee</option>
-                <option>Other Fee</option>
-              </select>
-            </div>
-            {studentId && !matchedStudent && <div className="field-error">No matching student</div>}
-            {matchedStudent && (
-              <div className="info-box">
-                <strong>{matchedStudent.name}</strong>
-                <span>
-                  Outstanding now {formatMoney(studentBalance)} → after this payment{" "}
-                  {formatMoney(Math.max(0, studentBalance - amount))}
-                </span>
-              </div>
-            )}
-          </>
-        )}
-
-        {kind === "expense" && (
-          <>
-            <Input label="Category" value={category} onChange={setCategory} required />
-            <Input label="Description" value={description} onChange={setDescription} />
-            <div className="info-box"><span>Account will be set to {line.account}.</span></div>
-          </>
-        )}
-
-        {kind === "transfer" && (
-          <>
-            <div className="field">
-              <label>{isDeposit ? "Money came from" : "Money went to"}</label>
-              <select value={otherAccount} onChange={(e) => setOtherAccount(e.target.value)}>
-                {ACCOUNTS.filter((a) => a !== line.account).map((a) => <option key={a}>{a}</option>)}
-              </select>
-            </div>
-            <Input label="Purpose" value={purpose} onChange={setPurpose} />
-            <div className="info-box">
-              <span>
-                {isDeposit
-                  ? `Transfer ${otherAccount} → ${line.account}`
-                  : `Transfer ${line.account} → ${otherAccount}`}
-              </span>
-            </div>
-          </>
-        )}
-
-        <div className="form-actions">
-          <button type="button" className="button secondary" onClick={onClose} disabled={busy}>Cancel</button>
-          <button type="submit" className="button primary" disabled={busy}>
-            {busy ? "Saving..." : kind === "link" ? "Match" : "Create & match"}
-          </button>
-        </div>
-      </form>
-    </Modal>
   );
 }

@@ -17,7 +17,7 @@ import {
   studentFeeTotals,
 } from "./lib/fees.js";
 import { parseBankStatement } from "./lib/bankStatement.js";
-import { attachLinks, bankReferenceText, buildManualLinkPayload, hasBankReference, linksToLinePatch, matchStatementLines } from "./lib/reconcile.js";
+import { attachLinks, bankReferenceText, buildManualLinkPayload, linksToLinePatch, matchStatementLines } from "./lib/reconcile.js";
 import { getAccess } from "./lib/access.js";
 import {
   fetchStudents,
@@ -855,20 +855,6 @@ function AppShell() {
 
   /* ---------------- Bank reconciliation ---------------- */
 
-  // Stamp the bank line's text onto a linked entry ONLY while the entry's
-  // bank_reference is empty -- a value someone already recorded is never
-  // overwritten here (replacing references is reserved for the Sync with
-  // preview + undo step).
-  const fillBankReference = async (kind, id, line) => {
-    const list = kind === "collection" ? collections : kind === "expense" ? expenses : transfers;
-    const entry = list.find((r) => String(r.id) === String(id));
-    if (!entry || hasBankReference(entry)) return;
-    const patch = { bank_reference: bankReferenceText(line) };
-    if (kind === "collection") await updateCollection(id, patch);
-    else if (kind === "expense") await updateExpense(id, patch, profile.id);
-    else if (kind === "transfer") await updateTransfer(id, patch);
-  };
-
   // Parse an uploaded statement, auto-match its lines against existing
   // collections / expenses / transfers, and store it.
   const uploadBankStatement = async (account, file) => {
@@ -919,13 +905,8 @@ function AppShell() {
         await saveMatchLinks(idBySeq.get(ln.seq), m.links, "auto_exact", { userId: profile.id });
       }
 
-      // Auto-matched collections/expenses/transfers get the full bank line
-      // description/reference written onto them as a permanent audit trail
-      // (see the "Fix Bank Reconciliation Matching Logic" brief) -- same as
-      // a manual match/classification does below.
-      await Promise.all(
-        matchedLines.flatMap(({ ln, m }) => m.links.map((k) => fillBankReference(k.bookKind, k.bookId, ln)))
-      );
+      // Linking never edits an entry's bank_reference or date; only
+      // "Sync to books" does (preview, history, undo).
 
       await Promise.all([loadData(), loadBankData()]);
     } catch (err) {
@@ -937,8 +918,7 @@ function AppShell() {
 
   // Apply a confirmed "Re-run auto-match" plan (see planRerun). Each line is
   // updated only while it is still review/unmatched, so nothing already
-  // matched, classified or ignored can be overridden. Order-assumed matches
-  // get no bank_reference, same as at upload.
+  // matched, classified or ignored can be overridden.
   const applyBankRerun = async (changes) => {
     setBankBusy(true);
     setDataError("");
@@ -951,7 +931,6 @@ function AppShell() {
         const applied = await updateBankStatementLineIfOpen(c.line.id, patch);
         if (applied && matched) {
           await saveMatchLinks(c.line.id, c.links, "auto_exact", { userId: profile.id });
-          await Promise.all(c.links.map((k) => fillBankReference(k.bookKind, k.bookId, c.line)));
         }
       }
       await Promise.all([loadData(), loadBankData()]);
@@ -962,14 +941,13 @@ function AppShell() {
     }
   };
 
-  // Link one bank line to the book entries picked in the Link entry popup, in
-  // one atomic save. Errors propagate so the popup can show them.
+  // Link one bank line to the book entries picked in the Match popup, in one
+  // atomic save. Errors propagate so the popup can show them.
   const linkBankLine = async (line, entries) => {
     setBankBusy(true);
     try {
       const payload = buildManualLinkPayload(line.id, entries);
       await saveMatchLinks(payload.lineId, payload.links, payload.source, { status: payload.status });
-      await Promise.all(payload.links.map((k) => fillBankReference(k.bookKind, k.bookId, line)));
       await Promise.all([loadData(), loadBankData()]);
     } finally {
       setBankBusy(false);
@@ -1009,16 +987,6 @@ function AppShell() {
     try {
       const amount = Number(line.deposit) > 0 ? Number(line.deposit) : Number(line.withdrawal);
       let created;
-
-      // Link to a record that already exists (no new record created).
-      if (input.kind === "link") {
-        await saveMatchLinks(line.id, [{ bookKind: input.linkKind, bookId: input.linkId }], "manual", {
-          userId: profile.id,
-        });
-        await fillBankReference(input.linkKind, input.linkId, line);
-        await Promise.all([loadData(), loadBankData()]);
-        return;
-      }
 
       if (input.kind === "collection") {
         const student = students.find(

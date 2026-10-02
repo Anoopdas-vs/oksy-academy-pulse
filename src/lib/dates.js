@@ -43,6 +43,12 @@ export function monthKeyOfISO(iso) {
 
 const MONTH_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
+// '2026-03-04' -> '04 Mar 2026' (empty string when it isn't a date).
+export function formatDayMonthYear(iso) {
+  const m = String(iso || "").match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return m ? `${m[3]} ${MONTH_SHORT[Number(m[2]) - 1]} ${m[1]}` : "";
+}
+
 // "Jan".."Dec" for a 'YYYY-MM' key.
 export function monthShortOfKey(key) {
   return MONTH_SHORT[Number(String(key).slice(5, 7)) - 1] || "";

@@ -25,7 +25,7 @@ const toggled = (set, key) => {
 // Preview + apply for "Sync to books": fills empty bank references, optionally
 // replaces differing ones, optionally moves book dates to the bank date. Only
 // book rows change; bank lines and links are never touched. Single-tenant.
-export default function SyncBankModal({ statement, lines, allLines, data, onClose, onApply, onUndo }) {
+export default function SyncBankModal({ statement, lines, allLines, data, onClose, onApply, onUndo, onOpenHistory }) {
   const preview = useMemo(() => {
     const ledger = ledgerByKeyOf(data);
     const hints = reviewHints(lines, allLines, statement.account, data);
@@ -79,7 +79,8 @@ export default function SyncBankModal({ statement, lines, allLines, data, onClos
   };
 
   return (
-    <Modal title="Sync to books" onClose={onClose}>
+    <Modal title="Sync to books" onClose={onClose} className="modal-lg">
+      <div className="modal-body">
       <div className="recon-chips">
         <span className="recon-chip">{t.fills} references to fill</span>
         <span className="recon-chip">{t.conflicts} conflicts</span>
@@ -88,8 +89,7 @@ export default function SyncBankModal({ statement, lines, allLines, data, onClos
         {t.blockedDates > 0 && <span className="recon-chip">{t.blockedDates} transfer dates to fix by hand</span>}
       </div>
       <p className="field-hint sync-note">
-        {t.eligible} lines eligible, {t.skipped} skipped{skippedText ? ` (${skippedText})` : ""}. Only lines whose
-        linked entries add up to the bank amount are synced. Bank lines and links are never changed.
+        {t.eligible} lines eligible, {t.skipped} skipped{skippedText ? ` (${skippedText})` : ""}.
       </p>
 
       {done && (
@@ -105,7 +105,6 @@ export default function SyncBankModal({ statement, lines, allLines, data, onClos
           <strong>
             Undone ({undoResult.restored} restored, {undoResult.skipped} skipped)
           </strong>
-          {undoResult.skipped > 0 && <span>Skipped entries were changed again after the sync and were left as they are.</span>}
         </div>
       )}
 
@@ -191,8 +190,12 @@ export default function SyncBankModal({ statement, lines, allLines, data, onClos
       </div>
 
       <ErrorBanner message={error} />
+      </div>
 
-      <div className="form-actions">
+      <div className="modal-footer">
+        <button type="button" className="link-button modal-link" onClick={onOpenHistory}>
+          Recent syncs / Undo
+        </button>
         <button type="button" className="button secondary" onClick={onClose} disabled={saving}>Close</button>
         <button type="button" className="button primary" onClick={apply} disabled={saving || payload.length === 0}>
           {saving ? "Working..." : `Apply ${payload.length} ${payload.length === 1 ? "change" : "changes"}`}

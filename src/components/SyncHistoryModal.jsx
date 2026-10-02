@@ -37,7 +37,8 @@ export default function SyncHistoryModal({ onClose, onLoadRuns, onUndo }) {
   };
 
   return (
-    <Modal title="Sync history" onClose={onClose}>
+    <Modal title="Recent syncs" onClose={onClose} className="modal-lg">
+      <div className="modal-body">
       <ErrorBanner message={error} />
       <div className="link-list table-scroll">
         <table>
@@ -72,7 +73,8 @@ export default function SyncHistoryModal({ onClose, onLoadRuns, onUndo }) {
           </tbody>
         </table>
       </div>
-      <div className="form-actions">
+      </div>
+      <div className="modal-footer">
         <button type="button" className="button secondary" onClick={onClose}>Close</button>
       </div>
     </Modal>

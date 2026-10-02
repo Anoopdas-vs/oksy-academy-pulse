@@ -89,7 +89,7 @@ export function Input({ label, value, onChange, type = "text", placeholder, erro
 // desktop/mouse screens. The offset is a CSS translate from the centred
 // position, held in a ref (no re-render per pointer move) and starting at
 // zero on every mount — so the dialog re-opens centred each time.
-export function Modal({ title, children, onClose, draggable = false }) {
+export function Modal({ title, children, onClose, draggable = false, className = "" }) {
   const titleId = useId();
   const modalRef = useRef(null);
   const overlayRef = useRef(null);
@@ -252,7 +252,7 @@ export function Modal({ title, children, onClose, draggable = false }) {
     >
       <div
         ref={modalRef}
-        className="modal"
+        className={className ? `modal ${className}` : "modal"}
         role="dialog"
         aria-modal="true"
         aria-labelledby={title ? titleId : undefined}

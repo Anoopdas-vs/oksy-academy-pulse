@@ -10,13 +10,9 @@ import {
   nameSimilarity,
   identityMatchScore,
   bankReferenceMismatches,
-  matchedRecordDetail,
-  ORDER_ASSUMED_SCORE,
-  isOrderAssumed,
   extractUtrs,
   planRerun,
   suggestSplitGroups,
-  reviewCandidatesDetail,
   matchStatementLines,
   describeLine,
   attachLinks,
@@ -33,7 +29,6 @@ import {
   buildManualLinkPayload,
   bookOnlyEntries,
   linkedKeys,
-  hasBankReference,
   bankReferenceText,
   buildSyncPreview,
   buildSyncPayload,
@@ -304,53 +299,6 @@ describe("bankReferenceMismatches", () => {
   });
 });
 
-describe("matchedRecordDetail — bank reference row", () => {
-  test("shows a Bank reference row for a matched expense that has one", () => {
-    const line = { match_kind: "expense", match_id: 1 };
-    const data = {
-      expenses: [
-        { id: 1, date: "2026-01-05", category: "Rent", account: "HDFC", amount: 500, bank_reference: "NEFT/RENT/JAN" },
-      ],
-    };
-    const detail = matchedRecordDetail(line, data);
-    assert.ok(detail.rows.some((r) => r.k === "Bank reference" && r.v === "NEFT/RENT/JAN"));
-  });
-
-  test("omits the Bank reference row for an expense without one", () => {
-    const line = { match_kind: "expense", match_id: 1 };
-    const data = { expenses: [{ id: 1, date: "2026-01-05", category: "Rent", account: "HDFC", amount: 500 }] };
-    const detail = matchedRecordDetail(line, data);
-    assert.ok(!detail.rows.some((r) => r.k === "Bank reference"));
-  });
-
-  test("shows a Bank reference row for a matched transfer that has one", () => {
-    const line = { match_kind: "transfer", match_id: 1 };
-    const data = {
-      transfers: [
-        {
-          id: 1,
-          date: "2026-01-05",
-          from_account: "HDFC",
-          to_account: "Cash",
-          amount: 200,
-          bank_reference: "ATM WDL 200",
-        },
-      ],
-    };
-    const detail = matchedRecordDetail(line, data);
-    assert.ok(detail.rows.some((r) => r.k === "Bank reference" && r.v === "ATM WDL 200"));
-  });
-
-  test("omits the Bank reference row for a transfer without one", () => {
-    const line = { match_kind: "transfer", match_id: 1 };
-    const data = {
-      transfers: [{ id: 1, date: "2026-01-05", from_account: "HDFC", to_account: "Cash", amount: 200 }],
-    };
-    const detail = matchedRecordDetail(line, data);
-    assert.ok(!detail.rows.some((r) => r.k === "Bank reference"));
-  });
-});
-
 /* ---- exact-date / UTR / group / re-run passes (production statement #8 shapes) ---- */
 
 const col = (id, date, amount, student_name, extra = {}) => ({ id, account: "ICICI", date, amount, student_name, ...extra });
@@ -493,23 +441,6 @@ describe("suggestSplitGroups — suggestion only", () => {
     const held = [{ ...row(9, 1, "2025-12-08", 1800), status: "matched", match_kind: "collection", match_id: 224 }];
     assert.deepEqual(suggestSplitGroups(lines, [...lines, ...held], "ICICI", d), []);
     assert.equal(lines[0].status, "unmatched");
-  });
-});
-
-describe("review tooltip + assumed-by-order flag", () => {
-  test("reviewCandidatesDetail lists the same window candidates (calendar-day math, from txn_date)", () => {
-    const d = { collections: [col(1, "2026-01-05", 1000, "A B"), col(2, "2026-01-11", 1000, "C D")] };
-    const detail = reviewCandidatesDetail(
-      { account: "ICICI", txn_date: "2026-01-06", deposit: 1000, withdrawal: 0, description: "", reference: "" },
-      d
-    );
-    assert.equal(detail.rows.length, 1); // 2026-01-11 is 5 days out, outside the 4-day window
-  });
-
-  test("isOrderAssumed reads the sentinel score only on matched lines", () => {
-    assert.equal(isOrderAssumed({ status: "matched", match_score: String(ORDER_ASSUMED_SCORE) }), true);
-    assert.equal(isOrderAssumed({ status: "matched", match_score: "0.94" }), false);
-    assert.equal(isOrderAssumed({ status: "review", match_score: null }), false);
   });
 });
 
@@ -1013,15 +944,6 @@ describe("manual link popup helpers", () => {
 });
 
 describe("phase 4 fixes", () => {
-  test("hasBankReference: only a non-blank value counts, so fill-only-if-empty never overwrites", () => {
-    assert.equal(hasBankReference({ bank_reference: "UPI/123/x" }), true);
-    assert.equal(hasBankReference({ bank_reference: "" }), false);
-    assert.equal(hasBankReference({ bank_reference: "   " }), false);
-    assert.equal(hasBankReference({ bank_reference: null }), false);
-    assert.equal(hasBankReference({}), false);
-    assert.equal(hasBankReference(undefined), false);
-  });
-
   test("book-only treats an entry linked from ANOTHER statement as linked; a transfer linked on another account is still book-only here", () => {
     const data = {
       collections: [

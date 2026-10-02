@@ -1,7 +1,7 @@
 // Bank reconciliation helpers: book-balance math and auto-matching uploaded
 // statement lines against the app's own transactions.
 
-import { formatMoney, receiptNo, expenseCode } from "./format.js";
+import { receiptNo, expenseCode } from "./format.js";
 import { daysBetweenISO } from "./dates.js";
 
 const amt = (v) => Number(v || 0);
@@ -373,105 +373,6 @@ export const MATCH_KIND_LABEL = {
 
 export function matchKindLabel(kind) {
   return MATCH_KIND_LABEL[kind] || kind || "record";
-}
-
-// For a line sitting in 'review' (an ambiguous same-amount/same-date
-// collision the auto-matcher refused to guess on), recompute the tied
-// candidates live from current data so the UI can show staff exactly what
-// it's choosing between -- same live-lookup approach as matchedRecordDetail
-// below, so this never goes stale relative to a stored snapshot.
-//   -> { title, rows: [{ k, v }] } | null
-export function reviewCandidatesDetail(line, data = {}, students = []) {
-  const account = line.account;
-  if (!account) return null;
-  const ledger = accountLedger(account, data);
-  const pool = rankCandidates(
-    { date: line.txn_date, description: line.description, reference: line.reference, deposit: line.deposit, withdrawal: line.withdrawal },
-    ledger
-  ).map((s) => s.e);
-
-  const rows = pool
-    .map((e) => {
-      const identityScore = identityMatchScore(line.description, line.reference, e.label);
-      let who = e.label || "—";
-      if (e.kind === "collection") {
-        const stu = (students || []).find((s) => String(s.id) === String(e.id) || s.name === e.label);
-        who = e.label || stu?.name || "—";
-      }
-      return { k: `${e.date} · ${matchKindLabel(e.kind)}`, v: `${who} (identity match ${Math.round(identityScore * 100)}%)` };
-    })
-    .sort((a, b) => (a.k < b.k ? -1 : 1));
-
-  if (!rows.length) return null;
-  return { title: "Possible matches — pick one via Resolve", rows };
-}
-
-// Resolve a matched/classified statement line to the underlying app record
-// and return the fields to show when the user hovers its status tag — so an
-// auto-match can be visually confirmed (or spotted as wrong and unmatched).
-//   -> { title, rows: [{ k, v }] }  |  null
-export function matchedRecordDetail(line, data = {}, students = []) {
-  const kind = line?.match_kind;
-  const id = line?.match_id;
-  if (!kind || id == null) return null;
-
-  const notFound = (title) => ({
-    title,
-    rows: [{ k: "Record", v: "not found — it may have been deleted" }],
-  });
-
-  if (kind === "collection") {
-    const c = (data.collections || []).find((r) => String(r.id) === String(id));
-    if (!c) return notFound("Fee collection");
-    const stu = (students || []).find((s) => s.id === c.student_id);
-    return {
-      title: "Fee collection",
-      rows: [
-        { k: "Date", v: c.date },
-        { k: "Student ID", v: c.student_id },
-        { k: "Student", v: c.student_name || stu?.name || "—" },
-        { k: "Batch", v: stu?.batch || "—" },
-        { k: "Type", v: c.type || "—" },
-        { k: "Amount", v: formatMoney(c.amount) },
-        ...(c.bank_reference ? [{ k: "Bank reference", v: c.bank_reference }] : []),
-        ...(isOrderAssumed(line) ? [{ k: "Match basis", v: "assumed by order — please verify" }] : []),
-      ],
-    };
-  }
-
-  if (kind === "expense") {
-    const e = (data.expenses || []).find((r) => String(r.id) === String(id));
-    if (!e) return notFound("Expense");
-    return {
-      title: "Expense",
-      rows: [
-        { k: "Date", v: e.date },
-        { k: "Category", v: e.category || "—" },
-        { k: "Description", v: e.description || "—" },
-        { k: "Account", v: e.account || "—" },
-        { k: "Amount", v: formatMoney(e.amount) },
-        ...(e.bank_reference ? [{ k: "Bank reference", v: e.bank_reference }] : []),
-      ],
-    };
-  }
-
-  if (kind === "transfer") {
-    const t = (data.transfers || []).find((r) => String(r.id) === String(id));
-    if (!t) return notFound("Transfer");
-    return {
-      title: "Transfer",
-      rows: [
-        { k: "Date", v: t.date },
-        { k: "From → To", v: `${t.from_account} → ${t.to_account}` },
-        { k: "Purpose", v: t.purpose || "—" },
-        { k: "Reference", v: t.reference || "—" },
-        { k: "Amount", v: formatMoney(t.amount) },
-        ...(t.bank_reference ? [{ k: "Bank reference", v: t.bank_reference }] : []),
-      ],
-    };
-  }
-
-  return null;
 }
 
 export function reconciliationSummary(statement, lines, data) {
@@ -1101,9 +1002,6 @@ export function multiAccountTransferKeys(allLines) {
   );
   return new Set([...accounts].filter(([, set]) => set.size > 1).map(([key]) => key));
 }
-
-// True when an entry already has a recorded bank_reference (never overwrite).
-export const hasBankReference = (entry) => String(entry?.bank_reference ?? "").trim() !== "";
 
 // ---------------------------------------------------------------------------
 // Sync to books (bank reference + date correction). Pure helpers; the writes

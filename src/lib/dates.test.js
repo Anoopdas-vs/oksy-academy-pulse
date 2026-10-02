@@ -4,7 +4,7 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import {
-  localDateString, addDaysISO, daysBetweenISO, monthKeyOfISO, monthShortOfKey, excelSerialToISO,
+  localDateString, addDaysISO, daysBetweenISO, monthKeyOfISO, monthShortOfKey, excelSerialToISO, formatDayMonthYear,
 } from "./dates.js";
 import { today } from "./format.js";
 import { parseStatementDate } from "./bankStatement.js";
@@ -77,5 +77,17 @@ describe("ISO calendar-day arithmetic", () => {
     assert.equal(monthKeyOfISO(""), null);
     assert.equal(monthShortOfKey("2026-06"), "Jun");
     assert.equal(monthShortOfKey("2026-01"), "Jan");
+  });
+});
+
+describe("formatDayMonthYear", () => {
+  test("formats an ISO day as 'dd Mon yyyy' (the Match popup header)", () => {
+    assert.equal(formatDayMonthYear("2026-03-04"), "04 Mar 2026");
+    assert.equal(formatDayMonthYear("2025-12-31T10:00:00Z"), "31 Dec 2025");
+  });
+  test("returns an empty string for anything that is not a date", () => {
+    assert.equal(formatDayMonthYear(""), "");
+    assert.equal(formatDayMonthYear(null), "");
+    assert.equal(formatDayMonthYear("soon"), "");
   });
 });
