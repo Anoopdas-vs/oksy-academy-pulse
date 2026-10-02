@@ -2,6 +2,7 @@
 // statement lines against the app's own transactions.
 
 import { formatMoney } from "./format.js";
+import { daysBetweenISO } from "./dates.js";
 
 const amt = (v) => Number(v || 0);
 const onOrBefore = (dateStr, cutoff) => !cutoff || String(dateStr).slice(0, 10) <= cutoff;
@@ -14,7 +15,14 @@ export function accountLedger(account, { collections = [], expenses = [], transf
   const entries = [];
   collections.forEach((c) => {
     if (c.account === account) {
-      entries.push({ kind: "collection", id: c.id, date: c.date, delta: amt(c.amount), label: c.student_name || "" });
+      entries.push({
+        kind: "collection",
+        id: c.id,
+        date: c.date,
+        delta: amt(c.amount),
+        label: c.student_name || "",
+        refText: [c.reference, c.bank_reference].filter(Boolean).join(" "),
+      });
     }
   });
   expenses.forEach((e) => {
@@ -25,6 +33,7 @@ export function accountLedger(account, { collections = [], expenses = [], transf
         date: e.date,
         delta: -amt(e.amount),
         label: [e.category, e.description].filter(Boolean).join(" "),
+        refText: [e.reference, e.bank_reference].filter(Boolean).join(" "),
       });
     }
   });
@@ -36,6 +45,7 @@ export function accountLedger(account, { collections = [], expenses = [], transf
         date: t.date,
         delta: amt(t.amount),
         label: [t.purpose, t.reference].filter(Boolean).join(" "),
+        refText: [t.reference, t.bank_reference].filter(Boolean).join(" "),
       });
     }
     if (t.from_account === account) {
@@ -45,6 +55,7 @@ export function accountLedger(account, { collections = [], expenses = [], transf
         date: t.date,
         delta: -amt(t.amount),
         label: [t.purpose, t.reference].filter(Boolean).join(" "),
+        refText: [t.reference, t.bank_reference].filter(Boolean).join(" "),
       });
     }
   });
@@ -155,88 +166,344 @@ export function identityMatchScore(description, reference, label) {
 // candidate's own label).
 const DATE_WEIGHT = 0.4;
 const IDENTITY_WEIGHT = 0.6;
-// When more than one candidate shares the amount and lands on the same
-// date, the identity score must clear this floor, AND beat the runner-up
-// by this margin, before we auto-pick a winner — otherwise it's a genuine
-// ambiguity (e.g. two students paying the same fee the same day) and the
-// line is surfaced for manual review instead of guessed.
+// When several candidates contend for a line, the identity score must clear
+// this floor, AND beat the runner-up by this margin, before we auto-pick a
+// winner -- otherwise it's a genuine ambiguity and the line goes to review.
 const MIN_IDENTITY_TO_DISAMBIGUATE = 0.55;
 const DISAMBIGUATION_MARGIN = 0.15;
+// Sentinel match_score stored for a pairing chosen only by statement order
+// (same date + amount, equal line/record counts, no name evidence). The UI
+// reads it back via isOrderAssumed() to flag the match for a manual check.
+export const ORDER_ASSUMED_SCORE = 0.01;
 
-// Score/rank candidate matches for `lines` against `account`'s ledger.
-// Returns an array parallel to `lines`, each element one of:
-//   { status: 'unmatched' }
-//   { status: 'matched', match_kind, match_id, match_score }
-//   { status: 'review', candidates: [{ match_kind, match_id, date, score }] }
-// A line only ever considers app entries of the same direction and equal
-// amount (to the rupee) within `dayWindow` days — that filter is mandatory,
-// not itself the ranking. Each app entry is consumed by at most one line.
-export function autoMatch(lines, account, data, dayWindow = 4) {
-  const ledger = accountLedger(account, data);
-  const used = new Set();
-  const key = (e) => `${e.kind}:${e.id}`;
-  const dayMs = 86400000;
+const isoDay = (d) => String(d || "").slice(0, 10);
+const entryKey = (e) => `${e.kind}:${e.id}`;
+const round2 = (n) => Math.round(n * 100) / 100;
 
-  return lines.map((ln) => {
-    const wantDeposit = amt(ln.deposit) > 0;
-    const target = wantDeposit ? amt(ln.deposit) : amt(ln.withdrawal);
-    const lnTime = new Date(ln.date).getTime();
-    const lnDateStr = String(ln.date).slice(0, 10);
+// Direction, whole-rupee amount and calendar day of a statement line.
+// Accepts either an upload-time line ({ date }) or a stored one ({ txn_date }).
+function describeLine(ln) {
+  const wantDeposit = amt(ln.deposit) > 0;
+  return {
+    wantDeposit,
+    target: Math.round(wantDeposit ? amt(ln.deposit) : amt(ln.withdrawal)),
+    dateStr: isoDay(ln.date ?? ln.txn_date),
+  };
+}
 
-    const pool = ledger.filter((e) => {
-      if (used.has(key(e))) return false;
-      const isDeposit = e.delta > 0;
-      if (isDeposit !== wantDeposit) return false;
-      if (Math.round(Math.abs(e.delta)) !== Math.round(target)) return false;
-      const dd = Math.abs(new Date(e.date).getTime() - lnTime) / dayMs;
-      return dd <= dayWindow;
-    });
+// 12-digit transaction ids (UPI RRN / IMPS ref) found in free text.
+export function extractUtrs(...texts) {
+  const found = texts.filter(Boolean).join(" ").match(/(?<![0-9A-Za-z])[0-9]{12}(?![0-9A-Za-z])/g);
+  return found ? Array.from(new Set(found)) : [];
+}
 
-    if (!pool.length) return { status: "unmatched" };
-
-    const scored = pool
-      .map((e) => {
-        const dd = Math.abs(new Date(e.date).getTime() - lnTime) / dayMs;
-        const dateScore = Math.max(0, 1 - dd / Math.max(dayWindow, 1));
-        const identityScore = identityMatchScore(ln.description, ln.reference, e.label);
-        const score = DATE_WEIGHT * dateScore + IDENTITY_WEIGHT * identityScore;
-        const sameDate = String(e.date).slice(0, 10) === lnDateStr;
-        return { e, score, identityScore, sameDate };
-      })
-      .sort((a, b) => b.score - a.score);
-
-    const [top, runnerUp] = scored;
-
-    // The classic collision: two-or-more same-amount/same-date candidates.
-    // Only auto-pick between them when the identity signal is both strong
-    // and decisive; otherwise this is a genuine ambiguity, not a match.
-    const tiedOnDate = scored.filter((s) => s.sameDate);
-    const contest = tiedOnDate.length > 1 ? tiedOnDate : scored;
-    const isAmbiguous =
-      contest.length > 1 &&
-      (top.identityScore < MIN_IDENTITY_TO_DISAMBIGUATE ||
-        (runnerUp && top.score - runnerUp.score < DISAMBIGUATION_MARGIN));
-
-    if (isAmbiguous) {
+// Every unused ledger entry that could explain `ln` (same direction, same
+// amount to the rupee, within `dayWindow` calendar days), scored and sorted
+// best-first. The single place this filter lives -- autoMatch and the
+// review-candidates tooltip both call it so they can never disagree.
+export function rankCandidates(ln, ledger, { used = new Set(), dayWindow = 4 } = {}) {
+  const { wantDeposit, target, dateStr } = describeLine(ln);
+  return ledger
+    .filter((e) => !used.has(entryKey(e)) && e.delta > 0 === wantDeposit && Math.round(Math.abs(e.delta)) === target)
+    .map((e) => ({ e, dd: Math.abs(daysBetweenISO(dateStr, isoDay(e.date))) }))
+    .filter(({ dd }) => dd <= dayWindow)
+    .map(({ e, dd }) => {
+      const dateScore = Math.max(0, 1 - dd / Math.max(dayWindow, 1));
+      const identityScore = identityMatchScore(ln.description, ln.reference, e.label);
       return {
+        e,
+        dd,
+        identityScore,
+        sameDate: dd === 0,
+        score: DATE_WEIGHT * dateScore + IDENTITY_WEIGHT * identityScore,
+      };
+    })
+    .sort((a, b) => b.score - a.score);
+}
+
+// An exact-date candidate is still not trusted when a different candidate
+// in the window is clearly the better payer-identity fit.
+const hasIdentityConflict = (exact, pool) =>
+  pool.some(
+    (s) =>
+      s !== exact &&
+      s.identityScore >= MIN_IDENTITY_TO_DISAMBIGUATE &&
+      s.identityScore - exact.identityScore >= DISAMBIGUATION_MARGIN
+  );
+
+// Auto-match statement `lines` against `account`'s ledger. Returns an array
+// parallel to `lines`, each element one of:
+//   { status: 'unmatched' }
+//   { status: 'matched', match_kind, match_id, match_score, match_method,
+//     assumed_by_order? }
+//   { status: 'review', candidates: [{ match_kind, match_id, date, score }] }
+// Each app entry is consumed by at most one line. Passes, most certain first:
+//   0. UTR       a 12-digit transaction id on the record equals the line's
+//   1. exact     the line has exactly one same-date candidate nobody else
+//                also claims (and no better identity fit elsewhere)
+//   2. group     N lines and N records share date+amount: pair by identity
+//                where decisive, the rest by statement order ("assumed")
+//   3. scored    date + identity scoring; ambiguity goes to review
+// `usedKeys` ("kind:id") seeds entries that must not be matched again.
+export function autoMatch(lines, account, data, dayWindow = 4, { usedKeys = [] } = {}) {
+  const ledger = accountLedger(account, data);
+  const used = new Set(usedKeys);
+  const results = new Array(lines.length).fill(null);
+  const rankedFor = (i) => rankCandidates(lines[i], ledger, { used, dayWindow });
+  const openIdx = () => lines.map((_, i) => i).filter((i) => !results[i]);
+
+  const take = (i, e, score, method, extra = {}) => {
+    used.add(entryKey(e));
+    results[i] = {
+      status: "matched",
+      match_kind: e.kind,
+      match_id: e.id,
+      match_score: round2(score),
+      match_method: method,
+      ...extra,
+    };
+  };
+
+  // Resolve proposals {i, e, score} only where the record is proposed by one
+  // line alone (and, for `claims`, claimed by no other line at all).
+  const applyUnique = (proposals, claims, method) => {
+    proposals.forEach(({ i, s }) => {
+      if ((claims.get(entryKey(s.e)) || 0) === 1) take(i, s.e, s.score, method);
+    });
+  };
+  const countClaims = (poolsByLine) => {
+    const claims = new Map();
+    poolsByLine.forEach((pool) =>
+      pool.forEach((s) => claims.set(entryKey(s.e), (claims.get(entryKey(s.e)) || 0) + 1))
+    );
+    return claims;
+  };
+
+  // Pass 0 -- UTR.
+  {
+    const pools = [];
+    const proposals = [];
+    openIdx().forEach((i) => {
+      const utrs = extractUtrs(lines[i].description, lines[i].reference);
+      if (!utrs.length) return;
+      const hits = rankedFor(i).filter((s) => extractUtrs(s.e.refText).some((u) => utrs.includes(u)));
+      pools.push(hits);
+      if (hits.length === 1) proposals.push({ i, s: hits[0] });
+    });
+    applyUnique(proposals, countClaims(pools), "utr");
+    proposals.forEach(({ i }) => {
+      if (results[i]) results[i].match_score = 1;
+    });
+  }
+
+  // Pass 1 -- unique exact date + amount, one-to-one.
+  {
+    const pools = [];
+    const proposals = [];
+    openIdx().forEach((i) => {
+      const ranked = rankedFor(i);
+      const exact = ranked.filter((s) => s.sameDate);
+      pools.push(exact);
+      if (exact.length === 1 && !hasIdentityConflict(exact[0], ranked)) proposals.push({ i, s: exact[0] });
+    });
+    applyUnique(proposals, countClaims(pools), "exact");
+  }
+
+  // Pass 2 -- equal-sized same date+amount groups.
+  {
+    const groups = new Map();
+    openIdx().forEach((i) => {
+      const { wantDeposit, target, dateStr } = describeLine(lines[i]);
+      const k = `${wantDeposit}|${target}|${dateStr}`;
+      if (!groups.has(k)) groups.set(k, { wantDeposit, target, dateStr, idxs: [] });
+      groups.get(k).idxs.push(i);
+    });
+    groups.forEach(({ wantDeposit, target, dateStr, idxs }) => {
+      if (idxs.length < 2) return;
+      let entries = ledger
+        .filter(
+          (e) =>
+            !used.has(entryKey(e)) &&
+            e.delta > 0 === wantDeposit &&
+            Math.round(Math.abs(e.delta)) === target &&
+            isoDay(e.date) === dateStr
+        )
+        .sort((a, b) => Number(a.id) - Number(b.id) || (a.kind < b.kind ? -1 : 1));
+      if (entries.length !== idxs.length) return;
+      let todo = idxs.slice();
+
+      // Identity first: a line whose payer clearly points at one record.
+      for (let progress = true; progress && todo.length; ) {
+        progress = false;
+        const picks = [];
+        todo.forEach((i) => {
+          const scored = entries
+            .map((e) => ({ e, id: identityMatchScore(lines[i].description, lines[i].reference, e.label) }))
+            .sort((a, b) => b.id - a.id);
+          const [best, next] = scored;
+          if (best.id >= MIN_IDENTITY_TO_DISAMBIGUATE && (!next || best.id - next.id >= DISAMBIGUATION_MARGIN)) {
+            picks.push({ i, e: best.e, id: best.id });
+          }
+        });
+        picks.forEach(({ i, e, id }) => {
+          if (picks.filter((p) => p.e === e).length !== 1) return;
+          take(i, e, DATE_WEIGHT + IDENTITY_WEIGHT * id, "group-identity");
+          todo = todo.filter((x) => x !== i);
+          entries = entries.filter((x) => x !== e);
+          progress = true;
+        });
+      }
+
+      // The rest: statement order <-> receipt order. Not evidence, so it is
+      // flagged and the caller must not write bank_reference for it.
+      todo.forEach((i, n) => take(i, entries[n], ORDER_ASSUMED_SCORE, "order", { assumed_by_order: true }));
+    });
+  }
+
+  // Pass 3 -- date + identity scoring for whatever is left.
+  openIdx().forEach((i) => {
+    const pool = rankedFor(i);
+    if (!pool.length) {
+      results[i] = { status: "unmatched" };
+      return;
+    }
+    // A lone exact-date candidate is judged alone (unless a better identity
+    // fit exists elsewhere); several exact-date candidates contest among
+    // themselves; otherwise the whole window contests.
+    const exact = pool.filter((s) => s.sameDate);
+    let contest = pool;
+    if (exact.length > 1 || (exact.length === 1 && !hasIdentityConflict(exact[0], pool))) contest = exact;
+    const [top, runnerUp] = contest;
+    const ambiguous =
+      contest.length > 1 &&
+      (top.identityScore < MIN_IDENTITY_TO_DISAMBIGUATE || top.score - runnerUp.score < DISAMBIGUATION_MARGIN);
+
+    if (ambiguous) {
+      results[i] = {
         status: "review",
-        candidates: scored.slice(0, 5).map((s) => ({
+        candidates: pool.slice(0, 5).map((s) => ({
           match_kind: s.e.kind,
           match_id: s.e.id,
           date: s.e.date,
-          score: Math.round(s.score * 100) / 100,
+          score: round2(s.score),
         })),
       };
+      return;
     }
-
-    used.add(key(top.e));
-    return {
-      status: "matched",
-      match_kind: top.e.kind,
-      match_id: top.e.id,
-      match_score: Math.round(top.score * 100) / 100,
-    };
+    take(i, top.e, top.score, "scored");
   });
+
+  return results;
+}
+
+// True for a stored line that was paired only by statement order.
+export const isOrderAssumed = (line) =>
+  line?.status === "matched" && Number(line.match_score) === ORDER_ASSUMED_SCORE;
+
+const OPEN_STATUSES = new Set(["review", "unmatched"]);
+const usedKeysOf = (lines, account) =>
+  lines
+    .filter(
+      (l) => l.account === account && (l.status === "matched" || l.status === "classified") && l.match_kind && l.match_id != null
+    )
+    .map((l) => `${l.match_kind}:${l.match_id}`);
+const asAutoLine = (l) => ({
+  date: l.txn_date,
+  description: l.description,
+  reference: l.reference,
+  deposit: l.deposit,
+  withdrawal: l.withdrawal,
+});
+
+// Dry-run for "Re-run auto-match" on a stored statement. Only lines that are
+// currently 'review' or 'unmatched' are considered; matched / classified /
+// ignored lines are never touched, and the records they hold are excluded
+// from matching. Returns only the lines whose outcome would change:
+//   [{ line, old_status, new_status, match_kind, match_id, match_score,
+//      match_method, assumed_by_order }]
+export function planRerun(statementLines, allLines, account, data, dayWindow = 4) {
+  const open = statementLines
+    .filter((l) => OPEN_STATUSES.has(l.status))
+    .sort((a, b) => (a.seq || 0) - (b.seq || 0));
+  const results = autoMatch(open.map(asAutoLine), account, data, dayWindow, {
+    usedKeys: usedKeysOf(allLines, account),
+  });
+  const changes = [];
+  open.forEach((line, i) => {
+    const r = results[i];
+    if (r.status !== "matched" && r.status === line.status) return;
+    changes.push({
+      line,
+      old_status: line.status,
+      new_status: r.status,
+      match_kind: r.match_kind || null,
+      match_id: r.match_id ?? null,
+      match_score: r.match_score ?? null,
+      match_method: r.match_method || null,
+      assumed_by_order: !!r.assumed_by_order,
+    });
+  });
+  return changes;
+}
+
+// Suggest -- never apply -- groupings where no single record explains a
+// line: one line equal to the sum of 2-3 records, or several same-day lines
+// whose total equals the sum of up to 4 records. A line can only hold one
+// match in the schema, so the user confirms these by hand via Resolve.
+//   -> [{ lines: [line...], total, options: [[entry...]...] }]
+export function suggestSplitGroups(statementLines, allLines, account, data, dayWindow = 4) {
+  const ledger = accountLedger(account, data);
+  const used = new Set(usedKeysOf(allLines, account));
+  const open = statementLines.filter(
+    (l) => OPEN_STATUSES.has(l.status) && !rankCandidates(asAutoLine(l), ledger, { used, dayWindow }).length
+  );
+
+  const subsetsSumming = (entries, total, maxSize) => {
+    const out = [];
+    const walk = (start, picked, sum) => {
+      if (out.length >= 5) return;
+      if (sum === total && picked.length >= 2) out.push(picked.slice());
+      if (picked.length === maxSize || sum >= total) return;
+      for (let i = start; i < entries.length; i += 1) {
+        picked.push(entries[i]);
+        walk(i + 1, picked, sum + Math.round(Math.abs(entries[i].delta)));
+        picked.pop();
+      }
+    };
+    walk(0, [], 0);
+    return out;
+  };
+
+  const suggestFor = (group, maxSize) => {
+    const { wantDeposit, dateStr } = describeLine(asAutoLine(group[0]));
+    const total = group.reduce((s, l) => s + describeLine(asAutoLine(l)).target, 0);
+    const free = ledger.filter((e) => !used.has(entryKey(e)) && e.delta > 0 === wantDeposit);
+    const sameDay = free.filter((e) => isoDay(e.date) === dateStr);
+    let options = subsetsSumming(sameDay, total, maxSize);
+    if (!options.length) {
+      const near = free.filter((e) => Math.abs(daysBetweenISO(dateStr, isoDay(e.date))) <= dayWindow);
+      options = subsetsSumming(near, total, maxSize);
+    }
+    return options.length ? { lines: group, total, options } : null;
+  };
+
+  const suggestions = [];
+  open.forEach((l) => {
+    const s = suggestFor([l], 3);
+    if (s) suggestions.push(s);
+  });
+  const byDay = new Map();
+  open.forEach((l) => {
+    const { wantDeposit, dateStr } = describeLine(asAutoLine(l));
+    const k = `${wantDeposit}|${dateStr}`;
+    byDay.set(k, [...(byDay.get(k) || []), l]);
+  });
+  byDay.forEach((group) => {
+    if (group.length < 2) return;
+    const s = suggestFor(group, 4);
+    if (s) suggestions.push(s);
+  });
+  return suggestions;
 }
 
 // Human label for a match kind. "collection" reads as "fee collection".
@@ -260,19 +527,10 @@ export function reviewCandidatesDetail(line, data = {}, students = []) {
   const account = line.account;
   if (!account) return null;
   const ledger = accountLedger(account, data);
-  const wantDeposit = Number(line.deposit) > 0;
-  const target = wantDeposit ? Number(line.deposit) : Number(line.withdrawal);
-  const lnTime = new Date(line.txn_date).getTime();
-  const dayMs = 86400000;
-  const dayWindow = 4;
-
-  const pool = ledger.filter((e) => {
-    const isDeposit = e.delta > 0;
-    if (isDeposit !== wantDeposit) return false;
-    if (Math.round(Math.abs(e.delta)) !== Math.round(target)) return false;
-    const dd = Math.abs(new Date(e.date).getTime() - lnTime) / dayMs;
-    return dd <= dayWindow;
-  });
+  const pool = rankCandidates(
+    { date: line.txn_date, description: line.description, reference: line.reference, deposit: line.deposit, withdrawal: line.withdrawal },
+    ledger
+  ).map((s) => s.e);
 
   const rows = pool
     .map((e) => {

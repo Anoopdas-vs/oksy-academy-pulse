@@ -195,13 +195,12 @@ describe("autoMatch — same-amount, same-day collision (regression, Fahmida/Fas
     assert.equal(result.match_id, 101);
   });
 
-  test("without any identity signal in the description, the same two candidates are flagged for review instead of guessed", () => {
+  test("without any identity signal, the unique exact-date candidate (Fahmida, same day) is still matched -- never the next-day Fasila", () => {
     const blankLine = { ...bankLine, description: "", reference: "" };
     const [result] = autoMatch([blankLine], "ICICI", data, 4);
-    assert.equal(result.status, "review");
-    assert.equal(result.candidates.length, 2);
-    const ids = result.candidates.map((c) => c.match_id).sort();
-    assert.deepEqual(ids, [101, 102]);
+    assert.equal(result.status, "matched");
+    assert.equal(result.match_id, 101);
+    assert.equal(result.match_method, "exact");
   });
 
   test("two same-amount, same-day candidates with no decisive identity signal are never silently auto-matched", () => {
