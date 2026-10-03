@@ -59,7 +59,12 @@ export default function SyncBankModal({ statement, lines, allLines, data, onClos
       setDone(await onApply(payload));
       setUndoResult(null);
     } catch (err) {
-      setError(friendlyError(err));
+      const text = friendlyError(err);
+      setError(
+        /is not linked/i.test(text)
+          ? `One entry is not properly linked. Re-match that bank line and try again. (${text})`
+          : text
+      );
     } finally {
       setSaving(false);
     }

@@ -1104,6 +1104,37 @@ describe("Sync to books — preview and payload", () => {
   });
 });
 
+describe("Sync to books — legacy-only links", () => {
+  const data = {
+    collections: [
+      { id: 1, account: "HDFC", date: "2026-03-05", amount: 1800, student_name: "A" },
+      { id: 2, account: "HDFC", date: "2026-03-05", amount: 1500, student_name: "B" },
+    ],
+    expenses: [],
+    transfers: [],
+  };
+  const ledger = ledgerByKeyOf(data);
+  const L = (id, deposit, links) => ({
+    id, seq: id, account: "HDFC", txn_date: "2026-03-05", description: `UPI/${id}`, reference: "", deposit, withdrawal: 0, status: "matched", links,
+  });
+  const lines = [
+    L(1, 1800, [{ bookKind: "collection", bookId: 1, source: "manual" }]),
+    L(2, 1500, [{ bookKind: "collection", bookId: 2, source: "legacy" }]),
+  ];
+  const preview = buildSyncPreview(buildReconRows(lines, ledger), ledger);
+
+  test("a legacy-only line is excluded and counted as skipped with its own reason", () => {
+    assert.equal(preview.items.some((i) => i.key === "collection:2"), false);
+    assert.equal(preview.totals.skipped, 1);
+    assert.equal(preview.skippedByReason["legacy link – re-match this line"], 1);
+  });
+
+  test("a normally linked line is still eligible", () => {
+    assert.equal(preview.totals.eligible, 1);
+    assert.equal(preview.items.some((i) => i.key === "collection:1"), true);
+  });
+});
+
 describe("inter-bank transfers: one link per account", () => {
   const data = {
     collections: [],
