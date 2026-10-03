@@ -1,6 +1,6 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { bookEntryFields, resolveBookEntry } from "./bookEntry.js";
+import { bookEntryFields, resolveBookEntry, createDelayedClose } from "./bookEntry.js";
 
 const students = [{ id: "S1", name: "Asha", batch: "B-7" }];
 const lists = {
@@ -58,5 +58,42 @@ describe("resolveBookEntry", () => {
   test("fetch failure is not found", async () => {
     const r = await resolveBookEntry({ kind: "transfer", id: 99, lists, students, fetchEntry: async () => { throw new Error("rls"); } });
     assert.deepEqual(r, { status: "notfound" });
+  });
+});
+
+describe("createDelayedClose", () => {
+  const fake = () => {
+    const q = new Map();
+    let n = 0;
+    return {
+      q,
+      timers: { set: (fn, ms) => { q.set(++n, { fn, ms }); return n; }, clear: (id) => q.delete(id) },
+    };
+  };
+  test("closes only after the delay fires", () => {
+    const f = fake();
+    let closed = 0;
+    const c = createDelayedClose(() => closed++, 150, f.timers);
+    c.schedule();
+    assert.equal(closed, 0);
+    assert.equal([...f.q.values()][0].ms, 150);
+    [...f.q.values()][0].fn();
+    assert.equal(closed, 1);
+  });
+  test("reaching the popup (cancel) keeps it open", () => {
+    const f = fake();
+    let closed = 0;
+    const c = createDelayedClose(() => closed++, 150, f.timers);
+    c.schedule();
+    c.cancel();
+    assert.equal(f.q.size, 0);
+    assert.equal(closed, 0);
+  });
+  test("rescheduling leaves a single pending timer", () => {
+    const f = fake();
+    const c = createDelayedClose(() => {}, 150, f.timers);
+    c.schedule();
+    c.schedule();
+    assert.equal(f.q.size, 1);
   });
 });

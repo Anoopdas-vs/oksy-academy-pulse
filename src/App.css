@@ -3159,6 +3159,8 @@ tfoot td {
   font-size: 12px;
   line-height: 1.4;
   white-space: normal;
+  user-select: text;
+  cursor: text;
 }
 
 .book-entry-pop dl {

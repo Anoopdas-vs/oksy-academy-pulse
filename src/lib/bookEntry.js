@@ -56,3 +56,24 @@ export async function resolveBookEntry({ kind, id, lists, students, fetchEntry }
   }
   return row ? { status: "found", fields: bookEntryFields(kind, row, students) } : { status: "notfound" };
 }
+
+export const CLOSE_DELAY_MS = 150;
+
+// Delayed close so the pointer can travel from the Book ID onto the popup:
+// schedule() starts the timer, cancel() (pointer reached the popup or came
+// back) stops it. Timer functions are injectable for tests.
+export function createDelayedClose(onClose, ms = CLOSE_DELAY_MS, timers = { set: setTimeout, clear: clearTimeout }) {
+  let t = null;
+  const cancel = () => {
+    if (t !== null) timers.clear(t);
+    t = null;
+  };
+  const schedule = () => {
+    cancel();
+    t = timers.set(() => {
+      t = null;
+      onClose();
+    }, ms);
+  };
+  return { schedule, cancel };
+}
