@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from "react";
 import { ErrorBanner, Modal } from "./ui.jsx";
+import BookEntryPopover from "./BookEntryPopover.jsx";
 import { friendlyError } from "../lib/validation.js";
 import {
   BOOK_KIND_TAG,
@@ -139,7 +140,8 @@ export default function SyncBankModal({ statement, lines, allLines, data, onClos
               return (
                 <tr key={i.key} className={ref.status === "conflict" ? "sync-conflict" : ""}>
                   <td className="recon-num">
-                    {i.label} <span className="mini-tag recon-kind">{BOOK_KIND_TAG[i.kind]}</span>
+                    <BookEntryPopover kind={i.kind} id={i.bookId}>{i.label}</BookEntryPopover>{" "}
+                    <span className="mini-tag recon-kind">{BOOK_KIND_TAG[i.kind]}</span>
                   </td>
                   <td>{i.bankDate}</td>
                   <td>
