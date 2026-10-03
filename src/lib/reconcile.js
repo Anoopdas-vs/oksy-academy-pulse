@@ -1023,6 +1023,7 @@ const SKIP_REASON = {
   UNMATCHED: "unmatched",
   IGNORED: "ignored",
 };
+const LEGACY_SKIP_REASON = "legacy link – re-match this line";
 
 // rows = buildReconRows() output; ledger = ledgerByKeyOf(). For every entry
 // linked to an eligible line:
@@ -1037,6 +1038,12 @@ export function buildSyncPreview(rows, ledger, { multiAccountKeys = new Set() } 
   let skipped = 0;
 
   rows.forEach((r) => {
+    // A legacy-only link has no bank_match_links row, so the RPC would refuse it.
+    if (r.links.some((k) => k.source === "legacy")) {
+      skipped += 1;
+      skippedByReason[LEGACY_SKIP_REASON] = (skippedByReason[LEGACY_SKIP_REASON] || 0) + 1;
+      return;
+    }
     const ok =
       r.links.length > 0 &&
       r.amountDiff === 0 &&
