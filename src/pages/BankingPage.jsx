@@ -1,6 +1,8 @@
 import React, { Suspense, lazy, useMemo, useState } from "react";
 import { ErrorBanner, Input, Modal, MetricCard } from "../components/ui.jsx";
 import { formatMoney } from "../lib/format.js";
+import BookEntryPopover from "../components/BookEntryPopover.jsx";
+import { BookEntryContext } from "../components/bookEntryContext.js";
 import { SearchBox, Pager } from "../components/SearchPager.jsx";
 import { usePagedList } from "../lib/usePagedList.js";
 import { downloadTemplate } from "../lib/templates.js";
@@ -64,8 +66,13 @@ export default function BankingPage({
   loading = false,
 }) {
   const [view, setView] = useState("transfers");
+  const bookEntryData = useMemo(
+    () => ({ lists: { collections, expenses, transfers }, students }),
+    [collections, expenses, transfers, students]
+  );
 
   return (
+    <BookEntryContext.Provider value={bookEntryData}>
     <section className="page">
       <div className="page-actions">
         <div className="subtab-switch">
@@ -130,6 +137,7 @@ export default function BankingPage({
         />
       )}
     </section>
+    </BookEntryContext.Provider>
   );
 }
 
@@ -573,7 +581,12 @@ function ReconcileView({
 
 const rerunLabel = (c) =>
   c.new_status === "matched"
-    ? c.links.map((k) => `${matchKindLabel(k.bookKind)} #${k.bookId}`).join(" + ")
+    ? c.links.map((k, i) => (
+        <React.Fragment key={`${k.bookKind}:${k.bookId}`}>
+          {i > 0 && " + "}
+          <BookEntryPopover kind={k.bookKind} id={k.bookId}>{`${matchKindLabel(k.bookKind)} #${k.bookId}`}</BookEntryPopover>
+        </React.Fragment>
+      ))
     : c.reason
       ? c.reason.replace(/_/g, " ")
       : "—";
@@ -795,7 +808,7 @@ function BookOnlyTable({ entries }) {
             )}
             {entries.map((e) => (
               <tr key={e.key}>
-                <td className="recon-num">{e.label}</td>
+                <td className="recon-num"><BookEntryPopover kind={e.kind} id={e.id}>{e.label}</BookEntryPopover></td>
                 <td><span className="mini-tag recon-kind">{BOOK_KIND_TAG[e.kind]}</span></td>
                 <td>{e.date}</td>
                 <td>{e.who || "—"}</td>
@@ -836,11 +849,12 @@ function ReconRow({ r, isAdmin, onMatch, onIgnoreLine, onUnmatchLine }) {
           ? r.links.map((k, i) => (
               <span className="recon-book" key={`${k.kind}:${k.bookId}`}>
                 {i > 0 && ", "}
-                {k.label} <span className="mini-tag recon-kind">{BOOK_KIND_TAG[k.kind]}</span>
+                <BookEntryPopover kind={k.kind} id={k.bookId}>{k.label}</BookEntryPopover>{" "}
+                <span className="mini-tag recon-kind">{BOOK_KIND_TAG[k.kind]}</span>
               </span>
             ))
           : sug
-            ? <span className="recon-suggest" title="Suggested only — not linked">{sug.label} <span className="mini-tag recon-kind">{BOOK_KIND_TAG[sug.kind]}</span> (suggested)</span>
+            ? <span className="recon-suggest" title="Suggested only — not linked"><BookEntryPopover kind={sug.kind} id={sug.bookId}>{sug.label}</BookEntryPopover>{" "}<span className="mini-tag recon-kind">{BOOK_KIND_TAG[sug.kind]}</span> (suggested)</span>
             : "—"}
       </td>
       <td>{linked ? r.bookDates.join(", ") : sug ? <span className="recon-suggest">{sug.date}</span> : "—"}</td>

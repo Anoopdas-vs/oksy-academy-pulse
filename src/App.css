@@ -3134,3 +3134,60 @@ tfoot td {
   margin-right: auto;
   font-size: 12px;
 }
+
+/* Book ID detail popup (Banking). Fixed + portal: never shifts the layout. */
+.book-entry-anchor {
+  cursor: help;
+  border-bottom: 1px dotted var(--muted);
+}
+
+.book-entry-anchor:focus-visible {
+  outline: 2px solid var(--purple);
+  outline-offset: 2px;
+}
+
+.book-entry-pop {
+  position: fixed;
+  z-index: 2000;
+  max-width: min(320px, calc(100vw - 16px));
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #fff;
+  color: inherit;
+  border: 1px solid #ddd;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: normal;
+  user-select: text;
+  cursor: text;
+}
+
+.book-entry-pop dl {
+  margin: 0;
+}
+
+.book-entry-pop dl > div {
+  display: flex;
+  gap: 8px;
+}
+
+.book-entry-pop dt {
+  min-width: 86px;
+  color: var(--muted);
+}
+
+.book-entry-pop dd {
+  margin: 0;
+  font-weight: 600;
+  word-break: break-word;
+}
+
+.book-entry-muted {
+  color: var(--muted);
+}
+
+.book-entry-error {
+  color: #c62828;
+  font-weight: 600;
+}

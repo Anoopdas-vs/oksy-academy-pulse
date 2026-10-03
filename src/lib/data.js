@@ -346,6 +346,16 @@ export async function createStaffUser(payload) {
 
 // -------- Bank reconciliation --------
 
+// One book entry by id, for the Book ID popup when it isn't in memory.
+// Same tables/views and RLS as the list fetches above; null if not found.
+export async function fetchBookEntry(kind, id) {
+  const table = { collection: "collections_basic", expense: "expenses", transfer: "transfers" }[kind];
+  if (!table) return null;
+  const { data, error } = await supabase.from(table).select("*").eq("id", id).maybeSingle();
+  if (error) throw error;
+  return data;
+}
+
 export async function fetchBankStatements() {
   const { data, error } = await supabase
     .from("bank_statements")
