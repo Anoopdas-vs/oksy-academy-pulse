@@ -1725,15 +1725,15 @@ tfoot td {
 
 .rcpt-head {
   display: grid;
-  grid-template-columns: 44px 1fr auto;
+  grid-template-columns: 72px 1fr auto;
   gap: 12px;
   align-items: start;
   border-bottom: 2px solid var(--purple);
   padding-bottom: 14px;
 }
 .rcpt-logo {
-  width: 44px;
-  height: 44px;
+  width: 72px;
+  height: 72px;
   object-fit: contain;
 }
 .rcpt-org h2 {
@@ -1765,7 +1765,7 @@ tfoot td {
 
 .rcpt-party {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 1.6fr 1fr;
   gap: 6px 24px;
   margin: 16px 0 18px;
 }
@@ -1791,6 +1791,7 @@ tfoot td {
   width: 100%;
   min-width: 0;
   border-collapse: collapse;
+  border-spacing: 0;
 }
 .rcpt-payment th {
   text-align: left;
@@ -1825,6 +1826,19 @@ tfoot td {
 .rcpt-received strong {
   font-size: 18px;
   font-weight: 800;
+}
+.rcpt-words {
+  margin-top: 8px;
+  font-size: 11px;
+  font-weight: 700;
+  font-style: italic;
+  color: #1c1626;
+}
+.rcpt-sign {
+  min-width: 5.5cm;
+  text-align: center;
+  border-top: 1px solid #777;
+  padding-top: 3px;
 }
 .rcpt-confirmed {
   margin-top: 8px;
@@ -1951,12 +1965,30 @@ tfoot td {
    PRINT
 ========================= */
 
+/* A4 portrait; one receipt = top half of the sheet (21 x 14.85 cm). The blank
+   lower half can be fed through the printer again for the next receipt. */
 @page {
-  size: 10.5cm 29.7cm;
-  margin: 0.4cm;
+  size: A4 portrait;
+  margin: 0;
 }
 
+
 @media print {
+  /* Hidden app content still takes layout space; clip to one half-A4 so no
+     blank 2nd page is printed. */
+  html,
+  body {
+    height: 14.85cm !important;
+    overflow: hidden !important;
+  }
+
+  html,
+  body,
+  body * {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
   body {
     background: white;
   }
@@ -1998,7 +2030,7 @@ tfoot td {
     position: absolute;
     left: 0;
     top: 0;
-    width: 10.5cm;
+    width: 21cm;
     border: none !important;
     box-shadow: none !important;
   }
@@ -2006,7 +2038,6 @@ tfoot td {
   .print-area table {
     min-width: 0;
     table-layout: fixed;
-    font-size: 10px;
   }
 
   .print-area table td,
@@ -2016,8 +2047,37 @@ tfoot td {
   }
 
   .rcpt {
-    padding: 10px 12px;
+    display: block;
+    position: relative;
+    box-sizing: border-box;
+    width: 21cm;
+    height: 14.85cm;
+    padding: 0.8cm 1.3cm 0.6cm;
+    overflow: hidden;
+    font-size: 12px;
+    break-inside: avoid;
+    page-break-inside: avoid;
   }
+  .rcpt {
+    border-bottom: 1px dashed #999;
+  }
+  .rcpt-head { padding-bottom: 8px; grid-template-columns: 76px 1fr auto; }
+  .rcpt-logo { width: 76px; height: 76px; }
+  .rcpt-org h2 { font-size: 17px; }
+  .rcpt-payment th,
+  .rcpt-payment td { border: 0.75pt solid #d9d4e3 !important; }
+  .rcpt-party { margin: 10px 0 10px; gap: 8px 40px; }
+  .rcpt-party .rcpt-kv-wide { grid-column: auto; }
+  .rcpt-kv { grid-template-columns: 105px 1fr; padding-bottom: 3px; }
+  .rcpt-kv span { font-size: 11px; }
+  .rcpt-payment td { padding: 6px 10px; font-size: 12px; }
+  .rcpt-payment th { padding: 6px 10px; font-size: 10px; }
+  .rcpt-received { margin-top: 8px; padding: 8px 14px; }
+  .rcpt-summary { margin-top: 10px; padding: 8px 12px; }
+  .rcpt-summary-grid { grid-template-columns: repeat(4, 1fr); gap: 6px 18px; }
+  .rcpt-summary-grid > div { flex-direction: column; font-size: 11px; }
+  .rcpt-foot { margin-top: 34px; font-size: 11px; align-items: flex-end; }
+  .rcpt-note { margin-top: 6px; }
 
   .row-actions,
   tfoot .row-actions {

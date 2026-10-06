@@ -276,7 +276,23 @@ function AppShell() {
   const access = useMemo(() => getAccess(profile, appSettings), [profile, appSettings]);
   const isAdmin = access.isAdmin;
 
-  const [activeTab, setActiveTab] = useState(HOME);
+  const [activeTab, setActiveTab] = useState(() => {
+    try {
+      const saved = decodeURIComponent(window.location.hash.replace(/^#\/?/, ""));
+      return saved && TAB_TITLES[saved] !== undefined ? saved : HOME;
+    } catch {
+      return HOME;
+    }
+  });
+  // Keep the URL hash in sync so a browser refresh stays on the same page.
+  useEffect(() => {
+    try {
+      const target = "#/" + encodeURIComponent(activeTab);
+      if (window.location.hash !== target) window.history.replaceState(null, "", target);
+    } catch {
+      /* ignore */
+    }
+  }, [activeTab]);
   const [navOpen, setNavOpen] = useState(() => {
     try {
       return localStorage.getItem("oksy.nav") !== "closed";

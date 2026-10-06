@@ -5,7 +5,7 @@
 // record". These tests pin that contract.
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { receiptNo, expenseCode, parseReceiptNo, parseExpenseId } from "./format.js";
+import { receiptNo, expenseCode, parseReceiptNo, parseExpenseId, amountInWords, tidyName } from "./format.js";
 
 describe("receiptNo / parseReceiptNo", () => {
   test("formats and round-trips", () => {
@@ -55,5 +55,19 @@ describe("expenseCode / parseExpenseId", () => {
   test("garbage input is NaN, distinct from blank", () => {
     assert.ok(Number.isNaN(parseExpenseId("not-an-expense")));
     assert.ok(Number.isNaN(parseExpenseId("OKSY/000007")));
+  });
+});
+
+describe("receipt display helpers", () => {
+  test("amountInWords uses Indian numbering", () => {
+    assert.equal(amountInWords(1000), "Rupees One Thousand Only");
+    assert.equal(amountInWords(56000), "Rupees Fifty Six Thousand Only");
+    assert.equal(amountInWords(125000), "Rupees One Lakh Twenty Five Thousand Only");
+    assert.equal(amountInWords(6500.5), "Rupees Six Thousand Five Hundred and Fifty Paise Only");
+    assert.equal(amountInWords(0), "");
+  });
+  test("tidyName normalises case and stray dots", () => {
+    assert.equal(tidyName("Sneha. M"), "Sneha M");
+    assert.equal(tidyName("ANOOPDAS  vs"), "Anoopdas VS");
   });
 });
