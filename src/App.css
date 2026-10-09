@@ -1962,6 +1962,350 @@ tfoot td {
 }
 
 /* =========================
+   CORPORATE REPORTS (Reports tab)
+========================= */
+.rpt-sheet {
+  padding: 0;
+  overflow: hidden;
+}
+
+.rpt-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 24px;
+  flex-wrap: wrap;
+  padding: 18px 20px 14px;
+  border-bottom: 2px solid var(--purple);
+  background: var(--purple-pale);
+}
+
+.rpt-org {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: var(--purple-2);
+}
+
+.rpt-name {
+  margin: 2px 0 0;
+  font-size: 20px;
+  color: var(--purple-dark);
+}
+
+.rpt-meta {
+  margin: 0;
+  display: grid;
+  gap: 3px;
+  font-size: 12px;
+  max-width: 520px;
+}
+
+.rpt-meta > div {
+  display: grid;
+  grid-template-columns: 76px 1fr;
+  gap: 8px;
+}
+
+.rpt-meta dt {
+  color: var(--muted);
+}
+
+.rpt-meta dd {
+  margin: 0;
+  font-weight: 600;
+}
+
+.rpt-basis dd {
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.rpt-kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+  padding: 16px 20px 4px;
+}
+
+.rpt-kpi {
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--purple-3);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: var(--card);
+  display: grid;
+  gap: 2px;
+}
+
+.rpt-kpi span {
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.rpt-kpi strong {
+  font-size: 18px;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.rpt-kpi small {
+  color: var(--muted);
+}
+
+.rpt-kpi.pos { border-left-color: var(--positive); }
+.rpt-kpi.pos strong { color: var(--positive); }
+.rpt-kpi.neg { border-left-color: var(--danger); }
+.rpt-kpi.neg strong { color: var(--danger); }
+
+.rpt-summary-line {
+  margin: 12px 20px 0;
+  font-weight: 700;
+  color: var(--purple);
+}
+
+.rpt-table-block {
+  padding: 14px 20px 4px;
+}
+
+.rpt-table-title {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: var(--purple-dark);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.rpt-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.rpt-table th {
+  background: var(--purple-dark);
+  color: #fff;
+  font-weight: 600;
+  font-size: 11.5px;
+  padding: 8px 10px;
+  white-space: normal;
+  vertical-align: bottom;
+  line-height: 1.25;
+}
+
+.rpt-table td {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--track);
+  font-variant-numeric: tabular-nums;
+}
+
+.rpt-table tbody tr:nth-child(even) td {
+  background: #fcfbfd;
+}
+
+.rpt-row-group td {
+  background: var(--purple-light) !important;
+  color: var(--purple-dark);
+  font-weight: 700;
+  font-size: 11.5px;
+  letter-spacing: 0.06em;
+  padding-top: 9px;
+}
+
+.rpt-row-subtotal td {
+  font-weight: 700;
+  border-top: 1px solid var(--purple-3);
+  background: #faf7fc !important;
+}
+
+.rpt-row-total td {
+  font-weight: 800;
+  border-top: 1.5px solid var(--purple-dark);
+  border-bottom: 3px double var(--purple-dark);
+  background: var(--purple-pale) !important;
+  color: var(--purple-dark);
+}
+
+.rpt-tone-neg td:first-child {
+  box-shadow: inset 3px 0 0 var(--danger);
+}
+
+.rpt-table td.rpt-neg { color: var(--danger); }
+.rpt-table td.rpt-pos { color: var(--positive); }
+
+.rpt-note {
+  margin: 6px 0 0;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.rpt-attention {
+  margin: 16px 20px 0;
+  border: 1px solid #f3d19c;
+  background: #fff8ec;
+  border-radius: 10px;
+  padding: 10px 14px;
+}
+
+.rpt-attention.clear {
+  border-color: #bfe5cd;
+  background: var(--positive-bg);
+}
+
+.rpt-attention h3 {
+  margin: 0 0 4px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--accent-amber);
+}
+
+.rpt-attention.clear h3 { color: var(--positive); }
+
+.rpt-attention ul {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 12.5px;
+  display: grid;
+  gap: 3px;
+}
+
+.rpt-attention p {
+  margin: 0;
+  font-size: 12.5px;
+}
+
+.rpt-foot {
+  padding: 12px 20px 16px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.rpt-foot p {
+  margin: 2px 0;
+}
+
+.rpt-sign {
+  display: none;
+  justify-content: space-between;
+  margin-top: 28px;
+  color: var(--text);
+  font-size: 12px;
+}
+
+.rpt-chart {
+  margin: 14px 20px 0;
+  padding: 10px 12px 6px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.rpt-chart svg {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+.rpt-grid { stroke: var(--track); stroke-width: 1; }
+.rpt-axis { fill: var(--muted); font-size: 10px; }
+.rpt-axis.faint { opacity: 0.7; font-size: 9px; }
+.rpt-bar-inc { fill: var(--purple-2); }
+.rpt-bar-exp { fill: var(--accent-amber); }
+
+.rpt-chart figcaption {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+.rpt-key {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  margin-left: 8px;
+}
+
+.rpt-key.inc { background: var(--purple-2); }
+.rpt-key.exp { background: var(--accent-amber); }
+
+@media (max-width: 640px) {
+  .rpt-head,
+  .rpt-kpis,
+  .rpt-table-block,
+  .rpt-foot { padding-left: 12px; padding-right: 12px; }
+  .rpt-attention,
+  .rpt-chart { margin-left: 12px; margin-right: 12px; }
+}
+
+/* Report printing: A4 landscape, whole report. printReport() in
+   ReportsPage.jsx adds .print-report to <html> and a temporary @page rule
+   for one print, so the half-A4 receipt print setup is untouched. */
+
+@media print {
+  html.print-report,
+  html.print-report body {
+    height: auto !important;
+    overflow: visible !important;
+  }
+
+  html.print-report .rpt-sheet {
+    position: static !important;
+    width: auto !important;
+  }
+
+  html.print-report .table-scroll {
+    overflow: visible !important;
+  }
+
+  html.print-report .rpt-table {
+    table-layout: auto !important;
+    font-size: 10.5px;
+  }
+
+  html.print-report .rpt-table td {
+    white-space: nowrap !important;
+  }
+
+  html.print-report .rpt-table th,
+  html.print-report .rpt-table td {
+    padding: 4px 6px;
+  }
+
+  html.print-report .rpt-table thead {
+    display: table-header-group;
+  }
+
+  html.print-report .rpt-table tr,
+  html.print-report .rpt-kpi,
+  html.print-report .rpt-attention,
+  html.print-report .rpt-chart {
+    break-inside: avoid;
+  }
+
+  html.print-report .rpt-sign {
+    display: flex;
+    margin-top: 18px;
+  }
+
+  html.print-report .rpt-head { padding: 10px 14px 8px; }
+  html.print-report .rpt-name { font-size: 17px; }
+  html.print-report .rpt-kpis { padding: 10px 14px 0; gap: 8px; }
+  html.print-report .rpt-kpi { padding: 6px 10px; }
+  html.print-report .rpt-kpi strong { font-size: 15px; }
+  html.print-report .rpt-table-block { padding: 8px 14px 0; }
+  html.print-report .rpt-table td { padding: 3px 6px; }
+  html.print-report .rpt-attention { margin: 10px 14px 0; padding: 6px 10px; }
+  html.print-report .rpt-chart { margin: 8px 14px 0; }
+  html.print-report .rpt-foot { padding: 8px 14px 0; break-inside: avoid; }
+  html.print-report .page { padding: 0 !important; margin: 0 !important; }
+}
+
+/* =========================
    PRINT
 ========================= */
 
