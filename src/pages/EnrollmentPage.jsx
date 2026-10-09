@@ -8,7 +8,7 @@ import StudentBulkUpload from "../components/StudentBulkUpload.jsx";
 import { STUDENT_BULK_HEADERS, STUDENT_BULK_SAMPLE_ROW } from "../lib/studentBulk.js";
 import { GUARDIAN_RELATIONS } from "../lib/validation.js";
 import { enrollmentPatchForBatch } from "../lib/batches.js";
-import { canOfferStudentDelete } from "../lib/studentId.js";
+import { studentDeleteState } from "../lib/studentId.js";
 import { previewStudentId } from "../lib/data.js";
 
 export default function EnrollmentPage({
@@ -151,18 +151,33 @@ export default function EnrollmentPage({
                 <td>{s.enrollment_date}</td>
                 <td className="row-actions">
                   <button className="edit-button" onClick={() => onEdit(s)}>Edit</button>
-                  {canOfferStudentDelete(s, { isAdmin: canDelete, hasReceipts: studentsWithReceipts.has(s.id) }) && (
-                    <button
-                      className="button ghost small danger"
-                      onClick={() => {
-                        if (window.confirm(`Delete ${s.id} (${s.name})? Only for an enrolment made by mistake — this cannot be undone. For a student who left, set the status to Dropped instead.`)) {
-                          onDelete(s);
-                        }
-                      }}
-                    >
-                      Delete
-                    </button>
-                  )}
+                  {(() => {
+                    const del = studentDeleteState(s, { isAdmin: canDelete, hasReceipts: studentsWithReceipts.has(s.id) });
+                    if (!del.show) return null;
+                    if (!del.allowed) {
+                      // Wrapped so the reason tooltip shows (disabled buttons get no hover in some browsers).
+                      return (
+                        <span title={del.reason}>
+                          <button className="button ghost small danger" disabled aria-label={`Delete ${s.id} — ${del.reason}`}>
+                            Delete
+                          </button>
+                        </span>
+                      );
+                    }
+                    return (
+                      <button
+                        className="button ghost small danger"
+                        title="Delete this enrolment (only for a student enrolled by mistake)"
+                        onClick={() => {
+                          if (window.confirm(`Delete ${s.id} (${s.name})? Only for an enrolment made by mistake — this cannot be undone. For a student who left, set the status to Dropped instead.`)) {
+                            onDelete(s);
+                          }
+                        }}
+                      >
+                        Delete
+                      </button>
+                    );
+                  })()}
                 </td>
               </tr>
             ))}

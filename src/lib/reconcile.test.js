@@ -173,6 +173,22 @@ describe("reconciliationSummary", () => {
     assert.equal(result.reconciled, false);
   });
 
+  test("is not reconciled while a linked entry no longer agrees with its bank line", () => {
+    const data = {
+      collections: [{ id: 1, account: "HDFC", date: "2026-01-05", amount: 900 }],
+      expenses: [],
+      transfers: [],
+    };
+    const statement = { account: "HDFC", period_end: "2026-01-31", closing_balance: 900 };
+    const lines = [{ status: "matched", txn_date: "2026-01-05", deposit: 1000, links: [{ bookKind: "collection", bookId: 1 }] }];
+    const result = reconciliationSummary(statement, lines, data);
+    assert.equal(result.mismatchCount, 1);
+    assert.equal(result.reconciled, false);
+    const fixed = reconciliationSummary(statement, [{ ...lines[0], deposit: 900 }], data);
+    assert.equal(fixed.mismatchCount, 0);
+    assert.equal(fixed.reconciled, true);
+  });
+
   test("is not reconciled when the statement closing balance disagrees with the book balance", () => {
     const data = {
       collections: [{ id: 1, account: "HDFC", date: "2026-01-05", amount: 1000 }],
@@ -815,10 +831,25 @@ describe("buildReconRows — review table rows", () => {
       ledger
     );
     assert.deepEqual(reconFilterCounts(rows), {
-      all: 7, match: 1, group: 1, date_diff: 1, amount_diff: 1, review: 1, unmatched: 1, ignored: 1,
+      all: 7, match: 1, group: 1, date_diff: 1, amount_diff: 1, review: 3, unmatched: 1, ignored: 1,
     });
     assert.equal(rows.filter((r) => reconRowMatchesFilter(r, "all")).length, 7);
     assert.deepEqual(rows.filter((r) => reconRowMatchesFilter(r, "group")).map((r) => r.lineId), [2]);
+    // Review lists true review lines AND linked lines whose book now differs.
+    assert.deepEqual(rows.filter((r) => reconRowMatchesFilter(r, "review")).map((r) => r.lineId).sort(), [3, 4, 5]);
+  });
+
+  test("a book entry edited after matching shows its diff and needs review", () => {
+    const bank = line(1, { txn_date: "2026-03-05", deposit: 1800, links: [link("collection", 236)] });
+    const before = buildReconRows([bank], ledgerByKeyOf({ collections: [{ id: 236, date: "2026-03-05", amount: 1800 }] }))[0];
+    assert.equal(before.result, "MATCH");
+    assert.equal(before.needsReview, false);
+    // Fee corrected in Fee Collection: new date and amount.
+    const after = buildReconRows([bank], ledgerByKeyOf({ collections: [{ id: 236, date: "2026-03-07", amount: 1500 }] }))[0];
+    assert.equal(after.result, "AMOUNT_DIFF");
+    assert.equal(after.amountDiff, 300);
+    assert.equal(after.dateDiff, -2);
+    assert.equal(after.needsReview, true);
   });
 });
 

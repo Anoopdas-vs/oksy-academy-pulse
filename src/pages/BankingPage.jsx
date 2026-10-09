@@ -435,6 +435,14 @@ function ReconcileView({
                       {summary.reviewCount > 0 && (
                         <span className="mini-tag warn">{summary.reviewCount} needs review</span>
                       )}
+                      {summary.mismatchCount > 0 && (
+                        <span
+                          className="mini-tag warn"
+                          title="Matched lines whose book entry was changed and no longer agrees with the bank (date or amount)"
+                        >
+                          {summary.mismatchCount} book ≠ bank
+                        </span>
+                      )}
                     </>
                   )}
                 </h3>
@@ -831,9 +839,17 @@ function ReconRow({ r, isAdmin, onMatch, onIgnoreLine, onUnmatchLine }) {
   const sug = !linked ? r.suggestion : null;
   const reasonText = r.reason ? REASON_LABEL[r.reason] || r.reason : r.result === "REVIEW" ? "Needs review" : "";
   return (
-    <tr className={r.result === "REVIEW" || r.result === "UNMATCHED" ? "recon-attn" : ""}>
+    <tr className={r.result === "REVIEW" || r.result === "UNMATCHED" || r.needsReview ? "recon-attn" : ""}>
       <td>
         <span className={`rbadge ${r.result.toLowerCase()}`}>{RESULT_LABEL[r.result]}</span>
+        {r.needsReview && (
+          <div
+            className="recon-reason recon-review-req"
+            title="The linked book entry differs from this bank line. Correct the book entry, sync the date, or Unmatch and link the right entry."
+          >
+            Review required
+          </div>
+        )}
         {sources.has("auto_name") && <span className="mini-tag ok recon-src">Name-confirmed</span>}
         {sources.has("auto_utr") && <span className="mini-tag ok recon-src">UTR</span>}
         {isOrderAssumed(r.line) && <span className="mini-tag warn recon-src">Assumed by order</span>}

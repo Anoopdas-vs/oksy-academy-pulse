@@ -1,16 +1,65 @@
 import React, { useCallback, useContext, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { fetchBookEntry } from "../lib/data.js";
-import { findLoadedEntry, bookEntryFields, resolveBookEntry, createDelayedClose } from "../lib/bookEntry.js";
+import { findLoadedEntry, bookEntryDetail, resolveBookEntry, createDelayedClose } from "../lib/bookEntry.js";
 
 import { BookEntryContext } from "./bookEntryContext.js";
 
 const GAP = 6;
 const MARGIN = 8;
+const COPIED_MS = 1400;
 
-// Read-only detail popup for a Book ID. Hover / focus (desktop) or tap
-// (touch) opens it; mouse leave, blur, tap outside or Esc closes it. The
-// popup is a fixed-position portal, so it never shifts the table layout.
+// Clipboard write with a fallback for browsers/contexts without the async API.
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.setAttribute("readonly", "");
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand("copy");
+      ta.remove();
+      return ok;
+    } catch {
+      return false;
+    }
+  }
+}
+
+function CopyButton({ text, label, className = "" }) {
+  const [state, setState] = useState("idle"); // idle | copied | failed
+  useEffect(() => {
+    if (state === "idle") return undefined;
+    const t = setTimeout(() => setState("idle"), COPIED_MS);
+    return () => clearTimeout(t);
+  }, [state]);
+  return (
+    <button
+      type="button"
+      className={`bep-copy ${state} ${className}`}
+      onClick={async (e) => {
+        e.stopPropagation();
+        setState((await copyText(text)) ? "copied" : "failed");
+      }}
+    >
+      {state === "copied" ? "✓ Copied" : state === "failed" ? "Copy failed" : label}
+    </button>
+  );
+}
+
+// Read-only detail popup for a Book ID.
+//   Mouse: shown only while the pointer is on the ID or on the popup itself;
+//          it hides automatically (after a short delay) as soon as the
+//          pointer leaves both. A click never pins it open.
+//   Keyboard: Tab focus on the ID opens it; blur / Esc closes it.
+//   Touch: tap toggles; tap outside closes.
+// The popup is a fixed-position portal, so it never shifts the table layout.
 export default function BookEntryPopover({ kind, id, children }) {
   const { lists, students } = useContext(BookEntryContext);
   const anchor = useRef(null);
@@ -19,10 +68,10 @@ export default function BookEntryPopover({ kind, id, children }) {
   const popId = useId();
   const [open, setOpen] = useState(false);
   const [pos, setPos] = useState(null);
-  const [fetched, setFetched] = useState(null); // { status, fields } from the single-id fetch
+  const [fetched, setFetched] = useState(null); // { status, detail } from the single-id fetch
 
   const loaded = findLoadedEntry(kind, id, lists);
-  const view = loaded ? { status: "found", fields: bookEntryFields(kind, loaded, students) } : fetched;
+  const view = loaded ? { status: "found", detail: bookEntryDetail(kind, loaded, students) } : fetched;
 
   // Not in memory: fetch just this entry, once per open until it resolves.
   useEffect(() => {
@@ -48,10 +97,10 @@ export default function BookEntryPopover({ kind, id, children }) {
     setPos({ left, top });
   }, []);
 
-  const close = () => {
+  const close = useCallback(() => {
     setOpen(false);
     setPos(null);
-  };
+  }, []);
   const [{ schedule, cancel }] = useState(() => createDelayedClose(() => close()));
   const show = () => {
     cancel();
@@ -65,24 +114,42 @@ export default function BookEntryPopover({ kind, id, children }) {
 
   useEffect(() => {
     if (!open) return undefined;
+    const inside = (t) => anchor.current?.contains(t) || box.current?.contains(t);
     const onKey = (e) => e.key === "Escape" && (cancel(), close());
     const onDown = (e) => {
-      if (!anchor.current?.contains(e.target) && !box.current?.contains(e.target)) {
+      if (!inside(e.target)) {
         cancel();
         close();
       }
     };
+    // Safety net: if the pointer is anywhere else on the page, start the
+    // auto-hide even when a mouseleave was missed (fast moves, scrolling).
+    const onMove = (e) => {
+      if (e.pointerType !== "mouse") return;
+      if (inside(e.target)) cancel();
+      else schedule();
+    };
+    const onWindowBlur = () => {
+      cancel();
+      close();
+    };
     document.addEventListener("keydown", onKey);
     document.addEventListener("pointerdown", onDown);
+    document.addEventListener("pointermove", onMove);
+    window.addEventListener("blur", onWindowBlur);
     window.addEventListener("scroll", place, true);
     window.addEventListener("resize", place);
     return () => {
       document.removeEventListener("keydown", onKey);
       document.removeEventListener("pointerdown", onDown);
+      document.removeEventListener("pointermove", onMove);
+      window.removeEventListener("blur", onWindowBlur);
       window.removeEventListener("scroll", place, true);
       window.removeEventListener("resize", place);
     };
-  }, [open, place, cancel]);
+  }, [open, place, cancel, schedule, close]);
+
+  const d = view?.status === "found" ? view.detail : null;
 
   return (
     <>
@@ -94,14 +161,24 @@ export default function BookEntryPopover({ kind, id, children }) {
         onPointerDown={(e) => {
           lastPointer.current = e.pointerType;
         }}
-        onMouseEnter={show}
-        onMouseLeave={schedule}
-        onFocus={show}
-        onBlur={schedule}
+        onPointerEnter={(e) => {
+          if (e.pointerType === "mouse") show();
+        }}
+        onPointerLeave={(e) => {
+          if (e.pointerType === "mouse") schedule();
+        }}
+        onFocus={(e) => {
+          // Keyboard focus only. A mouse click also focuses the ID, and
+          // that must not keep the popup pinned open.
+          if (e.target.matches?.(":focus-visible")) show();
+        }}
+        onBlur={(e) => {
+          if (!box.current?.contains(e.relatedTarget)) schedule();
+        }}
         onClick={() => {
-          // Touch has no hover: a tap toggles. A mouse click keeps it open.
-          if (lastPointer.current === "mouse") show();
-          else if (open) close();
+          // Touch has no hover: a tap toggles. Mouse is handled by hover.
+          if (lastPointer.current === "mouse") return;
+          if (open) close();
           else show();
         }}
       >
@@ -112,23 +189,44 @@ export default function BookEntryPopover({ kind, id, children }) {
           <div
             ref={box}
             id={popId}
-            role="tooltip"
+            role="dialog"
+            aria-label="Book entry details"
             className="book-entry-pop"
-            onMouseEnter={cancel}
-            onMouseLeave={schedule}
+            onPointerEnter={cancel}
+            onPointerLeave={(e) => {
+              if (e.pointerType === "mouse") schedule();
+            }}
             style={{ left: pos?.left ?? 0, top: pos?.top ?? 0, visibility: pos ? "visible" : "hidden" }}
           >
-            {!view && <span className="book-entry-muted">Loading…</span>}
-            {view?.status === "notfound" && <span className="book-entry-error">Entry not found</span>}
-            {view?.status === "found" && (
-              <dl>
-                {view.fields.map(([k, v]) => (
-                  <div key={k}>
-                    <dt>{k}</dt>
-                    <dd>{v}</dd>
+            {!view && <div className="bep-state book-entry-muted">Loading…</div>}
+            {view?.status === "notfound" && <div className="bep-state book-entry-error">Entry not found</div>}
+            {d && (
+              <>
+                <div className="bep-head">
+                  <div>
+                    <div className="bep-kind">{d.kindLabel}</div>
+                    <div className="bep-code">{d.code}</div>
                   </div>
-                ))}
-              </dl>
+                  <CopyButton text={d.copyText} label="Copy all" className="bep-copy-all" />
+                </div>
+                <dl className="bep-grid">
+                  {d.fields.map(([k, v]) => (
+                    <div key={k} className={k === "Amount" ? "bep-row bep-amount" : "bep-row"}>
+                      <dt>{k}</dt>
+                      <dd>{v}</dd>
+                    </div>
+                  ))}
+                </dl>
+                <div className="bep-ref">
+                  <div className="bep-ref-head">
+                    <span>Bank reference</span>
+                    {d.bankReference && <CopyButton text={d.bankReference} label="Copy" />}
+                  </div>
+                  <div className={d.bankReference ? "bep-ref-text" : "bep-ref-text empty"}>
+                    {d.bankReference || "Not recorded"}
+                  </div>
+                </div>
+              </>
             )}
           </div>,
           document.body

@@ -35,9 +35,23 @@ export function nextStudentId(code, existingIds = []) {
   return formatStudentId(code, max + 1);
 }
 
-// Whether to OFFER the Delete button (a courtesy only — the
+// How to show the Delete button (a courtesy only — the
 // delete_mistaken_student RPC enforces the real rule, including linked
-// logins the UI doesn't load).
-export function canOfferStudentDelete(student, { isAdmin = false, hasReceipts = false } = {}) {
-  return !!student && isAdmin && student.status === "Registered" && !hasReceipts;
+// logins the UI doesn't load). Since migration 38 any status may be
+// deleted; a live fee receipt still blocks it.
+//   -> { show, allowed, reason }   show=false: no button at all (non-admin)
+export function studentDeleteState(student, { isAdmin = false, hasReceipts = false } = {}) {
+  if (!student || !isAdmin) return { show: false, allowed: false, reason: "" };
+  if (hasReceipts) {
+    return {
+      show: true,
+      allowed: false,
+      reason: "Has fee receipts — delete the receipts in Fee Collection first, or set the status to Dropped.",
+    };
+  }
+  return { show: true, allowed: true, reason: "" };
+}
+
+export function canOfferStudentDelete(student, opts = {}) {
+  return studentDeleteState(student, opts).allowed;
 }
