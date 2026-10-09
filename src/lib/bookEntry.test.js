@@ -1,6 +1,6 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { bookEntryFields, resolveBookEntry, createDelayedClose } from "./bookEntry.js";
+import { bookEntryFields, bookEntryDetail, resolveBookEntry, createDelayedClose } from "./bookEntry.js";
 
 const students = [{ id: "S1", name: "Asha", batch: "B-7" }];
 const lists = {
@@ -13,7 +13,7 @@ const get = (fields, k) => fields.find(([n]) => n === k)?.[1];
 describe("bookEntryFields", () => {
   test("fee", () => {
     const f = bookEntryFields("collection", lists.collections[0], students);
-    assert.deepEqual(f.map(([k]) => k), ["Student ID", "Student name", "Batch", "Fee type", "Amount", "Date"]);
+    assert.deepEqual(f.map(([k]) => k), ["Student ID", "Student name", "Batch", "Fee type", "Amount", "Date", "Account", "Reference"]);
     assert.equal(get(f, "Student ID"), "S1");
     assert.equal(get(f, "Batch"), "B-7");
     assert.equal(get(f, "Fee type"), "Tuition");
@@ -22,7 +22,7 @@ describe("bookEntryFields", () => {
   });
   test("expense", () => {
     const f = bookEntryFields("expense", lists.expenses[0]);
-    assert.deepEqual(f.map(([k]) => k), ["Category", "Description", "Amount", "Date"]);
+    assert.deepEqual(f.map(([k]) => k), ["Category", "Description", "Amount", "Date", "Account", "Reference"]);
     assert.equal(get(f, "Category"), "Rent");
     assert.equal(get(f, "Description"), "March rent");
   });
@@ -34,6 +34,26 @@ describe("bookEntryFields", () => {
   });
   test("missing values show a dash", () => {
     assert.equal(get(bookEntryFields("collection", { student_id: "X", amount: 1 }, []), "Batch"), "—");
+  });
+});
+
+describe("bookEntryDetail", () => {
+  test("header code, bank reference and copy text", () => {
+    const row = { ...lists.collections[0], account: "ICICI", bank_reference: " UPI/123/ASHA " };
+    const d = bookEntryDetail("collection", row, students);
+    assert.equal(d.code, "OKSY/000001");
+    assert.equal(d.kindLabel, "Fee receipt");
+    assert.equal(d.bankReference, "UPI/123/ASHA");
+    assert.match(d.copyText, /^Fee receipt: OKSY\/000001\n/);
+    assert.match(d.copyText, /Account: ICICI/);
+    assert.match(d.copyText, /Bank reference: UPI\/123\/ASHA$/);
+  });
+  test("codes for expense and transfer; empty bank reference", () => {
+    assert.equal(bookEntryDetail("expense", lists.expenses[0]).code, "EXP-00002");
+    const t = bookEntryDetail("transfer", lists.transfers[0]);
+    assert.equal(t.code, "TRF-00003");
+    assert.equal(t.bankReference, "");
+    assert.match(t.copyText, /Bank reference: —$/);
   });
 });
 

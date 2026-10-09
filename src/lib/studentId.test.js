@@ -5,6 +5,7 @@ import {
   parseStudentIdNumber,
   nextStudentId,
   canOfferStudentDelete,
+  studentDeleteState,
 } from "./studentId.js";
 
 test("formatStudentId pads to 3 digits and never truncates", () => {
@@ -44,13 +45,23 @@ test("nextStudentId = highest + 1, never fills gaps", () => {
   assert.equal(nextStudentId("DBHM", [...ids, "DBHM999"]), "DBHM1000");
 });
 
-test("canOfferStudentDelete: admin + Registered + no receipts only", () => {
+test("canOfferStudentDelete: admin + no receipts, any status (migration 38)", () => {
   const reg = { id: "DBHM117", status: "Registered" };
   assert.equal(canOfferStudentDelete(reg, { isAdmin: true }), true);
   assert.equal(canOfferStudentDelete(reg, { isAdmin: false }), false, "non-admin");
   assert.equal(canOfferStudentDelete(reg, { isAdmin: true, hasReceipts: true }), false);
   for (const status of ["Active", "Completed", "Dropped"]) {
-    assert.equal(canOfferStudentDelete({ ...reg, status }, { isAdmin: true }), false, status);
+    assert.equal(canOfferStudentDelete({ ...reg, status }, { isAdmin: true }), true, status);
   }
   assert.equal(canOfferStudentDelete(null, { isAdmin: true }), false);
+});
+
+test("studentDeleteState: hidden for non-admin, disabled with a reason when receipts exist", () => {
+  const s = { id: "DBHM117", status: "Active" };
+  assert.deepEqual(studentDeleteState(s, { isAdmin: false }), { show: false, allowed: false, reason: "" });
+  assert.deepEqual(studentDeleteState(s, { isAdmin: true }), { show: true, allowed: true, reason: "" });
+  const blocked = studentDeleteState(s, { isAdmin: true, hasReceipts: true });
+  assert.equal(blocked.show, true);
+  assert.equal(blocked.allowed, false);
+  assert.match(blocked.reason, /fee receipts/);
 });

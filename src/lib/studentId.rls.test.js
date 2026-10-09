@@ -178,7 +178,7 @@ if (missing.length) {
       }
     });
 
-    test("admin cannot delete a student with records or past Registered", async () => {
+    test("admin cannot delete a student with a live fee receipt", async () => {
       const { data: withReceipt } = await enrollAs(staff, "Has Receipt");
       const { error: colErr } = await service.from("collections").insert({
         student_id: withReceipt, student_name: "Has Receipt", date: "2026-09-01",
@@ -187,11 +187,25 @@ if (missing.length) {
       assert.equal(colErr, null, colErr?.message);
       const { error: e1 } = await admin.rpc("delete_mistaken_student", { p_id: withReceipt });
       assert.match(e1?.message || "", /fee receipts.*Dropped/);
+    });
 
+    test("admin can delete a mistaken enrolment in any status (migration 38)", async () => {
       const { data: active } = await enrollAs(staff, "Now Active");
       await service.from("students").update({ status: "Active" }).eq("id", active);
       const { error: e2 } = await admin.rpc("delete_mistaken_student", { p_id: active });
-      assert.match(e2?.message || "", /Only a Registered enrolment.*Dropped/);
+      assert.equal(e2, null, e2?.message);
+    });
+
+    test("a deleted receipt no longer blocks the delete (migration 38)", async () => {
+      const { data: id } = await enrollAs(staff, "Old Receipt");
+      const { data: col, error: colErr } = await service.from("collections").insert({
+        student_id: id, student_name: "Old Receipt", date: "2026-09-01",
+        type: "Course Fee", account: "Cash", amount: 1,
+      }).select("id").single();
+      assert.equal(colErr, null, colErr?.message);
+      await service.from("collections").delete().eq("id", col.id);
+      const { error } = await admin.rpc("delete_mistaken_student", { p_id: id });
+      assert.equal(error, null, error?.message);
     });
 
     test("admin can delete a clean Registered enrolment", async () => {

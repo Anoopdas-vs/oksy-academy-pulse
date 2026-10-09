@@ -375,20 +375,39 @@ export function matchKindLabel(kind) {
   return MATCH_KIND_LABEL[kind] || kind || "record";
 }
 
+// Linked lines whose book entries no longer agree with the bank line (date
+// or amount), always read from the CURRENT book rows. This is how an entry
+// edited after it was matched (e.g. date/amount corrected in Fee Collection)
+// comes back as "Review required" instead of silently staying matched.
+export function linkedMismatchCount(lines, data) {
+  const ledger = ledgerByKeyOf(data);
+  return lines.filter((l) => {
+    if (l.status === "ignored" || !l.links?.length) return false;
+    const books = l.links.map((k) => {
+      const e = ledger.get(`${k.bookKind}:${k.bookId}`);
+      return { date: e ? e.date : null, amount: e ? e.amount : 0 };
+    });
+    const d = describeLine(l, books);
+    return d.amountDiff !== 0 || d.dateDiff !== 0;
+  }).length;
+}
+
 export function reconciliationSummary(statement, lines, data) {
   const book = bookBalanceAsOf(statement.account, statement.period_end, data);
   const statementClosing = Number(statement.closing_balance || 0);
   const open = lines.filter((l) => l.status === "unmatched").length;
   const review = lines.filter((l) => l.status === "review").length;
   const ignored = lines.filter((l) => l.status === "ignored").length;
+  const mismatch = linkedMismatchCount(lines, data);
   return {
     bookBalance: book,
     statementClosing,
     difference: statementClosing - book,
     openCount: open,
     reviewCount: review,
+    mismatchCount: mismatch,
     ignoredCount: ignored,
-    reconciled: open === 0 && review === 0 && Math.round(statementClosing - book) === 0,
+    reconciled: open === 0 && review === 0 && mismatch === 0 && Math.round(statementClosing - book) === 0,
   };
 }
 
@@ -803,6 +822,9 @@ export function buildReconRows(lines, ledgerByKey = new Map(), hints = new Map()
       dateDiff: d.dateDiff,
       amountDiff: d.amountDiff,
       result: ln.status === "ignored" ? "IGNORED" : d.result,
+      // Linked, but the current book entry differs from the bank line:
+      // needs a human look (edit the book, sync dates, or unmatch).
+      needsReview: ln.status !== "ignored" && links.length > 0 && (d.amountDiff !== 0 || d.dateDiff !== 0),
       reason: links.length ? null : (hint?.reason ?? null),
       status: ln.status,
       suggestion: suggested
@@ -850,7 +872,10 @@ const FILTER_RESULT = {
   ignored: "IGNORED",
 };
 
-export const reconRowMatchesFilter = (row, key) => key === "all" || row.result === FILTER_RESULT[key];
+// The Review chip also lists linked rows whose book entry now differs from
+// the bank (row.needsReview), so they are never hidden among "matched".
+export const reconRowMatchesFilter = (row, key) =>
+  key === "all" || row.result === FILTER_RESULT[key] || (key === "review" && !!row.needsReview);
 
 // { all, match, group, date_diff, amount_diff, review, unmatched, ignored }
 export function reconFilterCounts(rows) {
@@ -859,6 +884,7 @@ export function reconFilterCounts(rows) {
     counts.all += 1;
     const key = Object.keys(FILTER_RESULT).find((k) => FILTER_RESULT[k] === r.result);
     if (key) counts[key] += 1;
+    if (r.needsReview && key !== "review") counts.review += 1;
   });
   return counts;
 }
