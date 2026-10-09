@@ -1673,7 +1673,16 @@ function AppShell() {
 
         {activeTab === "Reports" && (
           <ReportsPage
-            data={{ collections, expenses, transfers, students, bankStatements }}
+            data={{
+              collections,
+              expenses,
+              transfers,
+              students,
+              batches,
+              bankStatements,
+              bankLines: access.financials ? bankLines : null,
+              canSeeContacts: !!access.allReports,
+            }}
             range={range}
             periodLabel={periodLabel(period)}
             allReports={access.allReports}

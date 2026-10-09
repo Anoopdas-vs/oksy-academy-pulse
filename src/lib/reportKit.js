@@ -126,6 +126,7 @@ export function formatCount(n) {
 // Display text for one cell.
 export function formatCell(col, value) {
   if (value === null || value === undefined) return "";
+  if (col.date) return /^\d{4}-\d{2}-\d{2}$/.test(String(value)) ? dmy(String(value)) : String(value);
   if (col.money) return formatReportMoney(value);
   if (col.pct) return formatPct(value, { signed: !!col.change });
   if (col.num) return formatCount(value);
@@ -165,6 +166,7 @@ export function normalizeReport(result) {
       notes: result.notes || [],
       basis: result.basis || "",
       summary: result.summary || "",
+      exportTable: result.exportTable || null,
       structured: true,
     };
   }

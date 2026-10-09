@@ -17,7 +17,7 @@ import {
 // one place so a later white-label setting can replace it.
 const ORG_NAME = "OKSY ACADEMY LLP";
 
-const NEW_REPORTS = new Set(["account-wise", "monthly", "cash-bank"]);
+const NEW_REPORTS = new Set(["account-wise", "monthly", "cash-bank", "batch-summary", "expense-category-month"]);
 
 export default function ReportsPage({ data, range, periodLabel = "All time", allReports = true, preparedBy = "" }) {
   const [openId, setOpenId] = useState(null);
@@ -172,6 +172,11 @@ function ReportView({ report, data, range: globalRange, periodLabel: globalLabel
       await exportReportToXlsx(fileName, tables[0].columns, tables[0].rows);
       return;
     }
+    // Some registers export their plain rows (re-uploadable template shape).
+    if (model.exportTable) {
+      await exportReportToXlsx(fileName, model.exportTable.columns, model.exportTable.rows);
+      return;
+    }
     try {
       const XLSX = await import("xlsx");
       const aoa = reportToSheetRows({
@@ -295,8 +300,9 @@ function ReportView({ report, data, range: globalRange, periodLabel: globalLabel
                         {t.columns.map((c) => {
                           const right = c.money || c.pct || c.num;
                           const tone = cellTone(c, r[c.key], r);
+                          const hot = r._hot?.includes(c.key);
                           return (
-                            <td key={c.key} className={[right ? "ra" : "", tone ? `rpt-${tone}` : ""].join(" ").trim() || undefined}>
+                            <td key={c.key} className={[right ? "ra" : "", tone ? `rpt-${tone}` : "", hot ? "rpt-hot" : ""].join(" ").trim() || undefined}>
                               {formatCell(c, r[c.key])}
                             </td>
                           );
