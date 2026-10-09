@@ -2,7 +2,7 @@ import { inRange } from "./period.js";
 import { grossFee, effectiveFeeDue, outstanding, creditBalance } from "./fees.js";
 import { receiptNo, expenseCode } from "./format.js";
 import { STUDENT_BULK_COLUMNS } from "./studentBulk.js";
-import { pnlReport, monthlyReport, cashBankReport } from "./financeReports.js";
+import { pnlReport, monthlyReport, cashBankReport, accountWiseReport } from "./financeReports.js";
 
 const sum = (rows, f = (r) => r.amount) => rows.reduce((s, r) => s + Number(f(r) || 0), 0);
 const within = (rows, range) => (range ? rows.filter((r) => inRange(r.date, range)) : rows);
@@ -10,6 +10,7 @@ const within = (rows, range) => (range ? rows.filter((r) => inRange(r.date, rang
 // Each report: { id, name, description, downloadable, build(ctx, filters) -> { columns, rows, summary } }
 // columns: [{ key, label, money? }]
 export const REPORTS = [
+  accountWiseReport,
   pnlReport,
   monthlyReport,
   cashBankReport,

@@ -2,16 +2,27 @@ import React, { useMemo, useState } from "react";
 import { SearchBox } from "../components/SearchPager.jsx";
 import { REPORTS, exportReportToXlsx } from "../lib/reports.js";
 import { STAFF_REPORT_IDS } from "../lib/access.js";
-import { normalizeReport, formatCell, cellTone, formatKpi, reportToSheetRows, formatReportMoney } from "../lib/reportKit.js";
+import {
+  normalizeReport,
+  formatCell,
+  cellTone,
+  formatKpi,
+  reportToSheetRows,
+  formatReportMoney,
+  REPORT_PERIOD_PRESETS,
+  resolveReportPeriod,
+} from "../lib/reportKit.js";
 
 // Organisation name printed on every report. Single-tenant today; kept in
 // one place so a later white-label setting can replace it.
 const ORG_NAME = "OKSY ACADEMY LLP";
 
-const NEW_REPORTS = new Set(["monthly", "cash-bank"]);
+const NEW_REPORTS = new Set(["account-wise", "monthly", "cash-bank"]);
 
 export default function ReportsPage({ data, range, periodLabel = "All time", allReports = true, preparedBy = "" }) {
   const [openId, setOpenId] = useState(null);
+  // The report's own period (kept while moving between reports).
+  const [periodChoice, setPeriodChoice] = useState({ preset: "global" });
   const list = allReports ? REPORTS : REPORTS.filter((r) => STAFF_REPORT_IDS.includes(r.id));
   const report = list.find((r) => r.id === openId) || null;
 
@@ -44,6 +55,8 @@ export default function ReportsPage({ data, range, periodLabel = "All time", all
       range={range}
       periodLabel={periodLabel}
       preparedBy={preparedBy}
+      periodChoice={periodChoice}
+      onPeriodChoice={setPeriodChoice}
       onBack={() => setOpenId(null)}
     />
   );
@@ -67,7 +80,46 @@ function printReport() {
   window.print();
 }
 
-function ReportView({ report, data, range, periodLabel, preparedBy, onBack }) {
+function PeriodPicker({ choice, onChange, globalLabel }) {
+  const set = (patch) => onChange({ ...choice, ...patch });
+  return (
+    <>
+      <div className="field">
+        <label>Period</label>
+        <select value={choice.preset} onChange={(e) => set({ preset: e.target.value })}>
+          {REPORT_PERIOD_PRESETS.map((p) => (
+            <option key={p.value} value={p.value}>
+              {p.value === "global" ? `${p.label} (${globalLabel})` : p.label}
+            </option>
+          ))}
+        </select>
+      </div>
+      {choice.preset === "month" && (
+        <div className="field">
+          <label>Month</label>
+          <input type="month" value={choice.month || ""} onChange={(e) => set({ month: e.target.value })} />
+        </div>
+      )}
+      {choice.preset === "custom" && (
+        <>
+          <div className="field">
+            <label>From</label>
+            <input type="date" value={choice.start || ""} onChange={(e) => set({ start: e.target.value })} />
+          </div>
+          <div className="field">
+            <label>To</label>
+            <input type="date" value={choice.end || ""} onChange={(e) => set({ end: e.target.value })} />
+          </div>
+        </>
+      )}
+    </>
+  );
+}
+
+function ReportView({ report, data, range: globalRange, periodLabel: globalLabel, preparedBy, periodChoice, onPeriodChoice, onBack }) {
+  const own = useMemo(() => resolveReportPeriod(periodChoice), [periodChoice]);
+  const range = own ? own.range : globalRange;
+  const periodLabel = own ? own.label : globalLabel;
   const filterDefs = useMemo(
     () =>
       (report.filters || []).map((f) => ({
@@ -155,26 +207,25 @@ function ReportView({ report, data, range, periodLabel, preparedBy, onBack }) {
         <button className="button primary" onClick={printReport}>Print / Save PDF</button>
       </div>
 
-      {(filterDefs.length > 0 || !model.structured) && (
-        <div className="report-controls no-print">
-          {filterDefs.map((f) => (
-            <div className="field" key={f.key}>
-              <label>{f.label}</label>
-              <select
-                value={filters[f.key] ?? f.options[0]}
-                onChange={(e) => setFilters({ ...filters, [f.key]: e.target.value })}
-              >
-                {f.options.map((o) => <option key={o}>{o}</option>)}
-              </select>
-            </div>
-          ))}
-          {!model.structured && (
-            <div className="report-search">
-              <SearchBox value={query} onChange={setQuery} placeholder="Search this report..." />
-            </div>
-          )}
-        </div>
-      )}
+      <div className="report-controls no-print">
+        <PeriodPicker choice={periodChoice} onChange={onPeriodChoice} globalLabel={globalLabel} />
+        {filterDefs.map((f) => (
+          <div className="field" key={f.key}>
+            <label>{f.label}</label>
+            <select
+              value={filters[f.key] ?? f.options[0]}
+              onChange={(e) => setFilters({ ...filters, [f.key]: e.target.value })}
+            >
+              {f.options.map((o) => <option key={o}>{o}</option>)}
+            </select>
+          </div>
+        ))}
+        {!model.structured && (
+          <div className="report-search">
+            <SearchBox value={query} onChange={setQuery} placeholder="Search this report..." />
+          </div>
+        )}
+      </div>
 
       <div className="table-card print-area rpt-sheet">
         <header className="rpt-head">

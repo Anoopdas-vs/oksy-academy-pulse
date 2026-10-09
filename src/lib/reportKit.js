@@ -215,3 +215,74 @@ export function reportToSheetRows({ orgName, reportName, periodLabel, generated,
   model.notes.forEach((n) => out.push([n]));
   return out;
 }
+
+// ---------------------------------------------------------------------------
+// Report-level period picker. Every report can override the top-bar period:
+//   { preset: "global" }                         -> use the top-bar period
+//   { preset: "month_current" | "month_last" | "quarter_current" |
+//             "quarter_last" | "fy_current" | "fy_previous" | "all" }
+//   { preset: "month", month: "2026-08" }        -> one chosen month
+//   { preset: "custom", start: "2026-04-01", end: "2026-09-30" }
+// resolveReportPeriod() -> { range: {start,end} | null, label } or null for
+// "global" (the caller keeps the top-bar range and label).
+export const REPORT_PERIOD_PRESETS = [
+  { value: "global", label: "Top-bar period" },
+  { value: "month_current", label: "This month" },
+  { value: "month_last", label: "Last month" },
+  { value: "month", label: "Pick a month…" },
+  { value: "quarter_current", label: "This quarter" },
+  { value: "quarter_last", label: "Last quarter" },
+  { value: "fy_current", label: "This FY" },
+  { value: "fy_previous", label: "Last FY" },
+  { value: "custom", label: "Custom dates…" },
+  { value: "all", label: "All time" },
+];
+
+export const dmy = (iso) => {
+  const [y, m, d] = iso.split("-").map(Number);
+  return `${String(d).padStart(2, "0")} ${MONTH_SHORT[m - 1]} ${y}`;
+};
+const monthRange = (y, m0) => {
+  const s = new Date(y, m0, 1);
+  return { start: isoOf(s), end: isoOf(new Date(s.getFullYear(), s.getMonth() + 1, 0)) };
+};
+const fyStartYear = (d) => (d.getMonth() >= 3 ? d.getFullYear() : d.getFullYear() - 1);
+
+export function resolveReportPeriod(choice, now = new Date()) {
+  const p = choice?.preset || "global";
+  if (p === "global") return null;
+  if (p === "all") return { range: null, label: "All time" };
+  if (p === "month_current" || p === "month_last") {
+    const r = monthRange(now.getFullYear(), now.getMonth() - (p === "month_last" ? 1 : 0));
+    return { range: r, label: monthLabel(r.start.slice(0, 7)) };
+  }
+  if (p === "month") {
+    if (!/^\d{4}-\d{2}$/.test(choice.month || "")) return { range: null, label: "Pick a month" };
+    const [y, m] = choice.month.split("-").map(Number);
+    return { range: monthRange(y, m - 1), label: monthLabel(choice.month) };
+  }
+  if (p === "quarter_current" || p === "quarter_last") {
+    // FY quarters: Q1 Apr–Jun, Q2 Jul–Sep, Q3 Oct–Dec, Q4 Jan–Mar.
+    const qStart0 = Math.floor(now.getMonth() / 3) * 3 - (p === "quarter_last" ? 3 : 0);
+    const s = new Date(now.getFullYear(), qStart0, 1);
+    const e = new Date(s.getFullYear(), s.getMonth() + 3, 0);
+    const fyQ = ((Math.floor(s.getMonth() / 3) + 3) % 4) + 1;
+    const fy = fyStartYear(s);
+    return {
+      range: { start: isoOf(s), end: isoOf(e) },
+      label: `Q${fyQ} FY ${fy}–${String(fy + 1).slice(-2)} (${MONTH_SHORT[s.getMonth()]}–${MONTH_SHORT[e.getMonth()]} ${e.getFullYear()})`,
+    };
+  }
+  if (p === "fy_current" || p === "fy_previous") {
+    const fy = fyStartYear(now) - (p === "fy_previous" ? 1 : 0);
+    return { range: { start: `${fy}-04-01`, end: `${fy + 1}-03-31` }, label: `FY ${fy}–${String(fy + 1).slice(-2)}` };
+  }
+  if (p === "custom") {
+    const start = choice.start || null;
+    const end = choice.end || null;
+    if (!start && !end) return { range: null, label: "Custom dates (choose From / To)" };
+    if (start && end && start > end) return { range: { start: end, end: start }, label: `${dmy(end)} to ${dmy(start)}` };
+    return { range: { start, end }, label: `${start ? dmy(start) : "…"} to ${end ? dmy(end) : "…"}` };
+  }
+  return null;
+}

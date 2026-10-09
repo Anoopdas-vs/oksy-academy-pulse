@@ -1,6 +1,6 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { pnlReport, monthlyReport, cashBankReport } from "./financeReports.js";
+import { pnlReport, monthlyReport, cashBankReport, accountWiseReport } from "./financeReports.js";
 
 const FY = { start: "2026-04-01", end: "2027-03-31" };
 const collections = [
@@ -115,5 +115,46 @@ describe("Cash & Bank Position", () => {
     assert.equal(months[0].month, "Apr 2026");
     assert.equal(months[0].ICICI, 11000);
     assert.equal(months[0].Cash, 6000);
+  });
+});
+
+describe("Account-wise Income, Expense & Balance", () => {
+  const hc = [
+    ...collections,
+    { id: 9, date: "2026-06-01", type: "Course Fee", account: "Healthcare", amount: 4000 },
+  ];
+  const ex = [...expenses, { id: 9, date: "2026-06-02", category: "Rent", account: "Healthcare", amount: 6000 }];
+  const out = accountWiseReport.build({ collections: hc, expenses: ex, transfers }, {}, FY);
+  const rows = out.tables[0].rows;
+  const r = (line) => rows.find((x) => x.line === line);
+
+  test("income by fee type per account", () => {
+    assert.equal(r("Registration Fee").Cash, 2000);
+    assert.equal(r("Course Fee").ICICI, 38000);
+    assert.equal(r("Course Fee").Healthcare, 4000);
+    assert.equal(r("Course Fee").total, 42000);
+    assert.equal(r("Total Income (A)").total, 44000);
+  });
+
+  test("expenses by category per account", () => {
+    assert.equal(r("Rent").ICICI, 20000);
+    assert.equal(r("Rent").Healthcare, 6000);
+    assert.equal(r("Salary").ICICI, 25000);
+    assert.equal(r("Total Expenses (B)").total, 51000);
+  });
+
+  test("transfers and balances reconcile", () => {
+    assert.equal(r("Transfers in").ICICI, 1000);
+    assert.equal(r("Transfers out").Cash, -1000);
+    assert.equal(r("Transfers in").total + r("Transfers out").total, 0);
+    const open = rows.find((x) => String(x.line).startsWith("Opening balance"));
+    assert.equal(open.Cash, 5000); // 10000 fee − 5000 rent before Apr 2026
+    const close = r("Closing balance");
+    assert.equal(close.Cash, 6000);
+    assert.equal(close.ICICI, -6000);
+    assert.equal(close.Healthcare, -2000);
+    assert.equal(out.kpis[3].label, "Academy owes Healthcare");
+    assert.equal(out.kpis[3].value, 2000);
+    assert.ok(out.exceptions.some((e) => e.startsWith("ICICI closing balance is negative")));
   });
 });

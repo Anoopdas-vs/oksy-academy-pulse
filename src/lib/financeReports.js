@@ -3,7 +3,7 @@
 // (single-tenant: one academy's books). Shapes: see reportKit.js.
 import { inRange } from "./period.js";
 import { bookBalanceAsOf } from "./reconcile.js";
-import { previousRange, monthsInRange, monthLabel, monthEnd, pctChange, share, dayBefore, formatReportMoney } from "./reportKit.js";
+import { previousRange, monthsInRange, monthLabel, monthEnd, pctChange, share, dayBefore, formatReportMoney, dmy } from "./reportKit.js";
 
 const amt = (v) => Number(v || 0);
 const sum = (rows, f = (r) => r.amount) => rows.reduce((s, r) => s + amt(f(r)), 0);
@@ -361,10 +361,118 @@ export const cashBankReport = {
       ],
       exceptions,
       notes: [
-        range?.start ? `Opening = book balance at the end of ${openingCut}.` : "All time: opening is zero.",
+        range?.start ? `Opening = book balance as on ${dmy(openingCut)}.` : "All time: opening is zero.",
         "The Healthcare account is an inter-company clearing account and is not counted as funds (see the Inter-company report).",
       ],
       summary: `Total funds ${formatReportMoney(totalFunds)}`,
+    };
+  },
+};
+
+// ------------------------------------------- Account-wise Income & Expense
+// One matrix: rows = income by fee type, expenses by category, transfers and
+// balances; columns = Cash | HDFC | ICICI | Healthcare | Total.
+export const ACCOUNT_COLUMNS = ["Cash", "HDFC", "ICICI", "Healthcare"];
+
+export const accountWiseReport = {
+  id: "account-wise",
+  name: "Account-wise Income, Expense & Balance",
+  description: "Income by fee type and expenses by category for Cash, HDFC, ICICI and Healthcare, with opening and closing balances.",
+  downloadable: true,
+  filters: [],
+  build({ collections = [], expenses = [], transfers = [] }, _f, range) {
+    const data = { collections, expenses, transfers };
+    const inP = (r) => inRange(r.date, range);
+    const c = collections.filter(inP);
+    const e = expenses.filter(inP);
+    const t = transfers.filter(inP);
+    const openingCut = range?.start ? dayBefore(range.start) : null;
+
+    // row builder: values per account + total
+    const mk = (line, valueOf, extra = {}) => {
+      const r = { line, ...extra };
+      let tot = 0;
+      ACCOUNT_COLUMNS.forEach((a) => {
+        const v = valueOf(a);
+        r[a] = v;
+        tot += v;
+      });
+      r.total = tot;
+      return r;
+    };
+    const known = new Set(ACCOUNT_COLUMNS);
+    const acctOf = (a) => (known.has(a) ? a : null);
+
+    const feeTypes = [
+      ...FEE_TYPE_ORDER.filter((ft) => c.some((x) => (x.type || "Other Fee") === ft)),
+      ...[...new Set(c.map((x) => x.type || "Other Fee"))].filter((ft) => !FEE_TYPE_ORDER.includes(ft)).sort(),
+    ];
+    const catTotals = byCategory(e);
+    const cats = [...catTotals.keys()].sort((a, b) => catTotals.get(b) - catTotals.get(a) || a.localeCompare(b));
+
+    const incomeOf = (a, ft) => sum(c.filter((x) => acctOf(x.account) === a && (ft === undefined || (x.type || "Other Fee") === ft)));
+    const expenseOf = (a, cat) => sum(e.filter((x) => acctOf(x.account) === a && (cat === undefined || (x.category || "Uncategorised") === cat)));
+    const tIn = (a) => sum(t.filter((x) => x.to_account === a));
+    const tOut = (a) => sum(t.filter((x) => x.from_account === a));
+    const opening = (a) => (openingCut ? bookBalanceAsOf(a, openingCut, data) : 0);
+
+    const rows = [
+      { _kind: "group", line: "A. INCOME (fees received into)" },
+      ...feeTypes.map((ft) => mk(ft, (a) => incomeOf(a, ft))),
+      mk("Total Income (A)", (a) => incomeOf(a), { _kind: "subtotal" }),
+      { _kind: "group", line: "B. EXPENSES (paid from)" },
+      ...cats.map((cat) => mk(cat, (a) => expenseOf(a, cat))),
+      mk("Total Expenses (B)", (a) => expenseOf(a), { _kind: "subtotal" }),
+      mk("Net (A − B)", (a) => incomeOf(a) - expenseOf(a), { _kind: "subtotal" }),
+      { _kind: "group", line: "C. TRANSFERS BETWEEN ACCOUNTS" },
+      mk("Transfers in", tIn),
+      mk("Transfers out", (a) => -tOut(a)),
+      { _kind: "group", line: "D. BALANCE" },
+      mk(range?.start ? `Opening balance (as on ${dmy(openingCut)})` : "Opening balance", opening),
+      mk("Closing balance", (a) => opening(a) + incomeOf(a) - expenseOf(a) + tIn(a) - tOut(a), { _kind: "total" }),
+    ];
+
+    const closing = rows[rows.length - 1];
+    const funds = closing.Cash + closing.HDFC + closing.ICICI;
+    const hc = closing.Healthcare;
+    const unknownAcct = [...c, ...e].filter((x) => !acctOf(x.account)).length;
+
+    const exceptions = [];
+    ACCOUNT_COLUMNS.filter((a) => a !== "Healthcare").forEach((a) => {
+      if (closing[a] < 0) exceptions.push(`${a} closing balance is negative: ${formatReportMoney(closing[a])}. An entry may be missing or posted to the wrong account.`);
+    });
+    if (unknownAcct) exceptions.push(`${unknownAcct} fee/expense entr${unknownAcct === 1 ? "y is" : "ies are"} not on Cash, HDFC, ICICI or Healthcare and ${unknownAcct === 1 ? "is" : "are"} left out of this report — correct the account.`);
+
+    return {
+      basis: BASIS_CASH,
+      kpis: [
+        { label: "Total Income", value: rows.find((r) => r.line === "Total Income (A)").total, kind: "money" },
+        { label: "Total Expenses", value: rows.find((r) => r.line === "Total Expenses (B)").total, kind: "money" },
+        { label: "Funds (Cash + HDFC + ICICI)", value: funds, kind: "money", tone: funds < 0 ? "neg" : "pos" },
+        {
+          label: hc >= 0 ? "Healthcare owes Academy" : "Academy owes Healthcare",
+          value: Math.abs(hc),
+          kind: "money",
+          tone: hc >= 0 ? undefined : "neg",
+        },
+      ],
+      tables: [
+        {
+          columns: [
+            { key: "line", label: "Particulars" },
+            ...ACCOUNT_COLUMNS.map((a) => ({ key: a, label: a, money: true })),
+            { key: "total", label: "Total", money: true },
+          ],
+          rows,
+          note: "Closing = Opening + Income − Expenses + Transfers in − Transfers out. Transfers net to zero in the Total column.",
+        },
+      ],
+      exceptions,
+      notes: [
+        "Healthcare is the inter-company clearing account: a positive balance means Healthcare holds money for the Academy; negative means the Academy owes Healthcare.",
+        range ? "" : "All time: opening balances are zero.",
+      ].filter(Boolean),
+      summary: `Funds ${formatReportMoney(funds)}`,
     };
   },
 };
