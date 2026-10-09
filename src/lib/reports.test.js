@@ -71,7 +71,7 @@ describe("expense-analysis report (line items)", () => {
         amount: 1000,
       },
     ];
-    const { columns, rows } = report.build({ expenses }, { view: "Line items" }, null);
+    const { columns, rows } = report.build({ expenses }, { view: "Line items" }, null).exportTable;
     assert.ok(columns.some((c) => c.key === "bankReference" && c.label === "Bank Reference"));
     assert.equal(rows[0].bankReference, "NEFT/RENT/JAN");
   });
@@ -85,7 +85,7 @@ describe("expense-analysis report (line items)", () => {
     const expenses = [
       { id: 42, date: "2026-01-05", category: "Rent", account: "HDFC", reference: "RENT-002", amount: 1000 },
     ];
-    const { columns, rows } = report.build({ expenses }, { view: "Line items" }, null);
+    const { columns, rows } = report.build({ expenses }, { view: "Line items" }, null).exportTable;
     assert.ok(columns.some((c) => c.key === "expenseId" && c.label === "Expense ID"));
     assert.ok(columns.some((c) => c.key === "reference" && c.label === "Reference"));
     assert.equal(rows[0].expenseId, "EXP-00042");
@@ -108,7 +108,7 @@ describe("transfers report", () => {
         amount: 200,
       },
     ];
-    const { columns, rows } = report.build({ transfers }, {}, null);
+    const { columns, rows } = report.build({ transfers }, {}, null).exportTable;
     assert.ok(columns.some((c) => c.key === "bankReference" && c.label === "Bank Reference"));
     assert.equal(rows[0].bankReference, "ATM WDL 200");
   });
