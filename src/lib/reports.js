@@ -1,8 +1,8 @@
 import { inRange } from "./period.js";
-import { grossFee, effectiveFeeDue, outstanding, creditBalance } from "./fees.js";
-import { receiptNo, expenseCode } from "./format.js";
+import { expenseCode } from "./format.js";
 import { STUDENT_BULK_COLUMNS } from "./studentBulk.js";
 import { pnlReport, monthlyReport, cashBankReport, accountWiseReport } from "./financeReports.js";
+import { batchSummaryReport, feeRegisterReport, studentDuesReport, categoryMonthReport } from "./feeReports.js";
 
 const sum = (rows, f = (r) => r.amount) => rows.reduce((s, r) => s + Number(f(r) || 0), 0);
 const within = (rows, range) => (range ? rows.filter((r) => inRange(r.date, range)) : rows);
@@ -14,51 +14,10 @@ export const REPORTS = [
   pnlReport,
   monthlyReport,
   cashBankReport,
-
-  {
-    id: "fee-collection",
-    name: "Fee Collection",
-    description: "Every student payment in the period.",
-    downloadable: true,
-    filters: [
-      { key: "account", label: "Account", options: ["All", "HDFC", "ICICI", "Cash", "Healthcare"] },
-      { key: "type", label: "Type", options: ["All", "Registration Fee", "Course Fee", "Exam Fee", "Other Fee"] },
-    ],
-    build({ collections }, f, range) {
-      let rows = within(collections, range);
-      if (f.account && f.account !== "All") rows = rows.filter((r) => r.account === f.account);
-      if (f.type && f.type !== "All") rows = rows.filter((r) => r.type === f.type);
-      rows = rows
-        .slice()
-        .sort((a, b) => (a.date < b.date ? 1 : -1))
-        .map((c) => ({
-          receiptNo: c.id ? receiptNo(c.id) : "",
-          studentId: c.student_id,
-          studentName: c.student_name || "",
-          date: c.date,
-          type: c.type,
-          account: c.account,
-          amount: Number(c.amount || 0),
-          reference: c.reference || "",
-          bankReference: c.bank_reference || "",
-        }));
-      return {
-        columns: [
-          { key: "receiptNo", label: "Receipt No" },
-          { key: "studentId", label: "Student ID" },
-          { key: "studentName", label: "Student Name" },
-          { key: "date", label: "Date" },
-          { key: "type", label: "Type" },
-          { key: "account", label: "Payment A/C" },
-          { key: "amount", label: "Amount", money: true },
-          { key: "reference", label: "Reference" },
-          { key: "bankReference", label: "Bank Reference" },
-        ],
-        rows,
-        summary: `${rows.length} payment(s) · ${fmt(sum(rows))}`,
-      };
-    },
-  },
+  batchSummaryReport,
+  feeRegisterReport,
+  studentDuesReport,
+  categoryMonthReport,
 
   {
     id: "expense-analysis",
@@ -122,66 +81,6 @@ export const REPORTS = [
         ],
         rows: out,
         summary: `${out.length} expense(s) · ${fmt(sum(out))}`,
-      };
-    },
-  },
-
-  {
-    id: "receivables",
-    name: "Student Receivables",
-    description: "Outstanding fee per student (all-time position).",
-    downloadable: true,
-    filters: [
-      { key: "status", label: "Status", options: ["All", "Registered", "Active", "Completed", "Dropped"] },
-      { key: "only", label: "Show", options: ["With balance", "With credit", "Everyone"] },
-    ],
-    build({ students, collections }, f) {
-      const paid = collections.reduce((m, c) => {
-        m[c.student_id] = (m[c.student_id] || 0) + Number(c.amount || 0);
-        return m;
-      }, {});
-      let rows = students.map((s) => {
-        const collected = paid[s.id] || 0;
-        return {
-          id: s.id,
-          name: s.name,
-          batch: s.batch || "",
-          status: s.status,
-          gross: grossFee(s),
-          waiver: Number(s.waiver || 0),
-          net: effectiveFeeDue(s, collected),
-          collected,
-          balance: outstanding(s, collected),
-          // Display-only — the flip side of `balance`'s Math.max(0, ...)
-          // clamp. Never summed into totals; flags a possible overpayment
-          // or duplicate payment for someone to check.
-          credit: creditBalance(s, collected),
-        };
-      });
-      if (f.status && f.status !== "All") rows = rows.filter((r) => r.status === f.status);
-      // Credit total reflects everyone matching the Status filter, regardless
-      // of the Show filter below — so "outstanding" and "credit" in the
-      // summary always describe the same population, not just whichever
-      // subset happens to be listed in the table.
-      const creditTotal = sum(rows, (r) => r.credit);
-      if ((f.only || "With balance") === "With balance") rows = rows.filter((r) => r.balance > 0);
-      if (f.only === "With credit") rows = rows.filter((r) => r.credit > 0);
-      rows.sort((a, b) => b.balance - a.balance || b.credit - a.credit);
-      return {
-        columns: [
-          { key: "id", label: "ID" },
-          { key: "name", label: "Name" },
-          { key: "batch", label: "Batch" },
-          { key: "status", label: "Status" },
-          { key: "net", label: "Net Fee", money: true },
-          { key: "collected", label: "Collected", money: true },
-          { key: "balance", label: "Balance", money: true },
-          { key: "credit", label: "Credit", money: true },
-        ],
-        rows,
-        summary:
-          `${rows.length} student(s) · outstanding ${fmt(sum(rows, (r) => r.balance))}` +
-          (creditTotal > 0 ? ` · credit ${fmt(creditTotal)} (review for duplicate payments)` : ""),
       };
     },
   },

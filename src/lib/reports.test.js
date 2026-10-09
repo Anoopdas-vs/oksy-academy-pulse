@@ -25,7 +25,7 @@ describe("fee-collection report", () => {
         amount: 500,
       },
     ];
-    const { columns, rows } = report.build({ collections }, {}, null);
+    const { columns, rows } = report.build({ collections }, {}, null).exportTable;
     assert.ok(columns.some((c) => c.key === "bankReference" && c.label === "Bank Reference"));
     assert.equal(rows[0].bankReference, "UPI/fahmidat0181@ok/UTR1");
   });
@@ -35,7 +35,7 @@ describe("fee-collection report", () => {
     const collections = [
       { id: 1, student_id: "S1", student_name: "X", date: "2026-01-05", type: "Course Fee", account: "HDFC", amount: 500 },
     ];
-    const { rows } = report.build({ collections }, {}, null);
+    const { rows } = report.build({ collections }, {}, null).exportTable;
     assert.equal(rows[0].bankReference, "");
   });
 
@@ -47,7 +47,7 @@ describe("fee-collection report", () => {
     const collections = [
       { id: 7, student_id: "DBHM001", student_name: "Fahmida", date: "2026-01-05", type: "Course Fee", account: "HDFC", amount: 500 },
     ];
-    const { columns, rows } = report.build({ collections }, {}, null);
+    const { columns, rows } = report.build({ collections }, {}, null).exportTable;
     assert.ok(columns.some((c) => c.key === "receiptNo" && c.label === "Receipt No"));
     assert.ok(columns.some((c) => c.key === "studentId" && c.label === "Student ID"));
     assert.ok(columns.some((c) => c.key === "studentName" && c.label === "Student Name"));

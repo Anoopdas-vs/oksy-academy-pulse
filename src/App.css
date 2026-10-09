@@ -2132,6 +2132,8 @@ tfoot td {
 }
 
 .rpt-table td.rpt-neg { color: var(--danger); }
+.rpt-table td.rpt-hot { background: #fff1d6 !important; font-weight: 700; }
+.rpt-tone-warn td:first-child { box-shadow: inset 3px 0 0 var(--accent-amber); }
 .rpt-table td.rpt-pos { color: var(--positive); }
 
 .rpt-note {
