@@ -87,11 +87,11 @@ import Dashboard from "./pages/Dashboard.jsx";
 import EnrollmentPage from "./pages/EnrollmentPage.jsx";
 import FeeCollectionPage from "./pages/FeeCollectionPage.jsx";
 import ExpensesPage from "./pages/ExpensesPage.jsx";
-import ReportsPage from "./pages/ReportsPage.jsx";
 import AdminPage from "./pages/AdminPage.jsx";
 // Academy Suite pages are code-split — they're never the landing tab and
 // pull their own data layer.
 const BankingPage = React.lazy(() => import("./pages/BankingPage.jsx"));
+const ReportsPage = React.lazy(() => import("./pages/ReportsPage.jsx"));
 const TimetablePage = React.lazy(() => import("./pages/TimetablePage.jsx"));
 const LiveClassPage = React.lazy(() => import("./pages/LiveClassPage.jsx"));
 const AssignmentsPage = React.lazy(() => import("./pages/AssignmentsPage.jsx"));
@@ -1673,10 +1673,11 @@ function AppShell() {
 
         {activeTab === "Reports" && (
           <ReportsPage
-            data={{ collections, expenses, transfers, students }}
+            data={{ collections, expenses, transfers, students, bankStatements }}
             range={range}
             periodLabel={periodLabel(period)}
             allReports={access.allReports}
+            preparedBy={profile.full_name || profile.email || ""}
           />
         )}
 

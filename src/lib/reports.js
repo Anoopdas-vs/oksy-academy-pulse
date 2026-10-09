@@ -2,6 +2,7 @@ import { inRange } from "./period.js";
 import { grossFee, effectiveFeeDue, outstanding, creditBalance } from "./fees.js";
 import { receiptNo, expenseCode } from "./format.js";
 import { STUDENT_BULK_COLUMNS } from "./studentBulk.js";
+import { pnlReport, monthlyReport, cashBankReport, accountWiseReport } from "./financeReports.js";
 
 const sum = (rows, f = (r) => r.amount) => rows.reduce((s, r) => s + Number(f(r) || 0), 0);
 const within = (rows, range) => (range ? rows.filter((r) => inRange(r.date, range)) : rows);
@@ -9,36 +10,10 @@ const within = (rows, range) => (range ? rows.filter((r) => inRange(r.date, rang
 // Each report: { id, name, description, downloadable, build(ctx, filters) -> { columns, rows, summary } }
 // columns: [{ key, label, money? }]
 export const REPORTS = [
-  {
-    id: "pnl",
-    name: "Profit & Loss",
-    description: "Revenue, expenses by category, and net profit for the period.",
-    downloadable: true,
-    filters: [],
-    build({ collections, expenses }, _f, range) {
-      const rev = sum(within(collections, range));
-      const exps = within(expenses, range);
-      const byCat = new Map();
-      exps.forEach((e) => byCat.set(e.category, (byCat.get(e.category) || 0) + Number(e.amount || 0)));
-      const rows = [
-        { line: "Fee collection revenue", amount: rev },
-        { line: "— Less: Expenses —", amount: null },
-        ...[...byCat.entries()]
-          .sort((a, b) => b[1] - a[1])
-          .map(([cat, amt]) => ({ line: `  ${cat}`, amount: -amt })),
-        { line: "Total expenses", amount: -sum(exps) },
-        { line: "Net Profit / (Loss)", amount: rev - sum(exps) },
-      ];
-      return {
-        columns: [
-          { key: "line", label: "Particulars" },
-          { key: "amount", label: "Amount", money: true },
-        ],
-        rows,
-        summary: `Revenue ${fmt(rev)} · Expense ${fmt(sum(exps))} · Net ${fmt(rev - sum(exps))}`,
-      };
-    },
-  },
+  accountWiseReport,
+  pnlReport,
+  monthlyReport,
+  cashBankReport,
 
   {
     id: "fee-collection",
