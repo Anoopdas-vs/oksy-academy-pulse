@@ -35,7 +35,7 @@
 ### 0.1 Staging results (21 Oct 2026)
 
 - Applied to `oksy-pulse-staging` (`mgiowjacjyhdtvrlhaaa`): 40–48, plus 38 (staging was missing it — drift) and a small patch revoking `authenticated` EXECUTE on the trigger functions (folded into the 43/47/48 files).
-- `supabase/checks/40_48_phase1_checks.sql`: 36 PASS / 0 FAIL after 38 was added (impersonates the existing staging super_admin, Executive, faculty and two students; rolls back). Covers 1.1, 1.3–1.10, migration 38 delete rules and migration 39 regression.
+- `supabase/checks/40_48_phase1_checks.sql`: 36 of 37 passed on the first run; the one failure was staging missing migration 38, and it passed after 38 was applied (re-run of that check alone) (impersonates the existing staging super_admin, Executive, faculty and two students; rolls back). Covers 1.1, 1.3–1.10, migration 38 delete rules and migration 39 regression.
 - `npm test` 385 pass / 0 fail / 6 skipped (live-RLS suites skip without env); `npm run lint` clean; `npm run build` OK.
 - Advisor (staging): remaining anon-executable definer functions are only the policy helpers (`is_admin`, `is_super_admin`, `is_staff_or_admin`, `is_approved_user`, `can_view_financials`, `my_batch`, `my_student_ref`, `teaches_batch`) — deliberately left for Phase 3. `collections_basic` and `exam_questions_public` still flagged as SECURITY DEFINER views (Phase 3 rebuild). Leaked-password protection = manual step M-1.
 - Known limits: "student sees only own receipts" ran with a student who has 0 receipts (proves no foreign rows, not own-row visibility); the walkthrough must confirm a student with receipts sees them. Executive UI will show a database error if an Executive edits fee fields in Enrollment (no UI change in Phase 1).
