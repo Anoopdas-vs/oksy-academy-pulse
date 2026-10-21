@@ -1,4 +1,5 @@
 import React from "react";
+import { reportError } from "../lib/monitoring.js";
 
 // Top-level safety net: without this, a single uncaught render error
 // (a malformed record, an unexpected null field, a chart-library edge
@@ -18,6 +19,7 @@ export default class ErrorBoundary extends React.Component {
   componentDidCatch(error, info) {
     // eslint-disable-next-line no-console
     console.error("Unhandled error in the app:", error, info?.componentStack);
+    reportError(error, { componentStack: info?.componentStack });
   }
 
   render() {

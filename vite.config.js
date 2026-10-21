@@ -4,6 +4,12 @@ import { defineConfig } from 'vite'
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react()],
+  // Release tag for error monitoring: the git commit Vercel / CI is building.
+  define: {
+    'import.meta.env.VITE_APP_RELEASE': JSON.stringify(
+      process.env.VERCEL_GIT_COMMIT_SHA || process.env.GITHUB_SHA || 'dev',
+    ),
+  },
   build: {
     rollupOptions: {
       output: {
