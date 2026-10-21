@@ -1,6 +1,6 @@
 # 04 — Phase 1 Plan: Security Hot-fixes on Current Production
 
-> **Status (21 Oct 2026): APPROVED by Anoop (D-1, D-18 = yes). Migrations 40–48 written and applied to STAGING ONLY; all checks pass there. Production NOT touched — waiting for walkthrough sign-off + explicit go-ahead.** Results: see §0.1.
+> **Status (21 Oct 2026): APPROVED by Anoop (D-1, D-18 = yes). Migrations 40–48 verified on staging and APPLIED TO PRODUCTION on 21 Oct 2026 (after a green backup run and Anoop's explicit go-ahead). Structural post-checks passed; owner smoke test on pulse.oksyacademy.in pending.** Results: see §0.1.
 > Prepared 2026-10-06 from the Phase 0 audit (`01_CURRENT_SYSTEM_AUDIT.md` §A6). **Revised 2026-10-21** (see §0: migration numbers now start at 40; conflicts with migrations 38/39 checked).
 
 ## 0. Revision 2026-10-21 (after PR #36)
@@ -125,3 +125,9 @@ About **4–5 working days** (1 day code + tests, 1 day staging + walkthrough, �
 
 - **Approve Phase 1 as above?** (yes / change something)
 - **1.10 (D-18):** should Executives be blocked from changing fee amounts and waivers? Recommended: **yes**.
+
+
+## 11. Production apply log (21 Oct 2026)
+Applied one at a time with `apply_migration` on `lkkbaosujkkakoglxmah` (all `success`): 40_guard_notify_batch, 41_expenses_select_staff_only, 42_collections_basic_filter, 43_block_self_grading, 44_drop_notif_insert, 45_attendance_own_batch, 46_submissions_bucket_limits, 47_function_hygiene, 48_staff_cannot_change_fees. 38/39 were already live. No file/SQL differences from staging (43/47/48 include the authenticated-revoke on trigger functions).
+Read-only post-checks (production): `expenses_approved_select` = is_staff_or_admin(); `collections_basic` filter = staff or own student_ref; `attend_self_insert` uses session_in_my_batch; `notif_insert` gone; bucket `submissions` 10 MB + 11 MIME types; 4 triggers enabled; anon cannot execute notify_batch, resubmit_assignment, score_exam_attempt, clear_my_must_change_password, handle_new_user, log_financial_change, delete_mistaken_student, session_in_my_batch, the two fee guards; search_path pinned on the 5 functions; Adjustments CHECKs intact; row counts unchanged (607 expenses / 613 collections / 146 students). Advisor: remaining anon-executable definer functions are only the policy helpers (Phase 3); 2 SECURITY DEFINER views and leaked-password protection remain (Phase 3 / manual M-1).
+Not done: owner smoke test on the live site; manual steps M-1, M-2, M-4; merging `fix/submissions-profile-embed` to main.

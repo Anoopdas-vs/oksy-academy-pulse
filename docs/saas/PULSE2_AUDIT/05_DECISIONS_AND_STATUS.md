@@ -7,7 +7,7 @@
 | Phase | Status |
 |---|---|
 | Phase 0 — Audit (`00`–`03`) | **Done**, delivered 2026-10-06 (audit predates the changes listed below) |
-| Phase 1 — Security hot-fixes | **Approved 21 Oct (D-1 yes, D-18 yes). Built + applied to STAGING only**, checks green (`04_…` §0.1). Production untouched; next: in-app walkthrough per role, backup, then explicit go-ahead. Migrations are 40–48 |
+| Phase 1 — Security hot-fixes | **DONE on production 21 Oct 2026** (migrations 40–48, `04_…` §11). Left: live smoke test, manual steps M-1/M-2/M-4, merge small submissions fix |
 | Later phases | Not started |
 
 Housekeeping note: during Phase 0 a read-only `git status` left an empty `.git/index.lock` in the local repo; it was removed (with permission) the same day. No other files were touched.
@@ -77,3 +77,5 @@ Both projects share one repo; these went through GitHub `main` (PR #36 merged 20
 - **D-18 = yes** (Executives cannot change fee amounts or waivers; only exception is the Dropped write-off). Branch `phase1/security-hotfixes` (not pushed). Migrations 40–48 in `supabase/`, checks in `supabase/checks/40_48_phase1_checks.sql`.
 - Staging was missing migration 38; applied it so staging matches production.
 - Production apply still needs: fresh backup, Anoop's walkthrough sign-off, explicit go-ahead.
+
+- **Phase 1 applied to production 21 Oct 2026** after green backup + explicit approval; see `04_…` §11. Next phase (2, engineering foundation) needs Anoop's go-ahead.
