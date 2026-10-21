@@ -163,6 +163,16 @@ describe("accountBalance — pure cash movement, never P&L", () => {
     assert.equal(accountBalance("HDFC", data), 750);
   });
 
+  test("a transfer from Adjustments moves the bank balance but not revenue/expense", () => {
+    const data = {
+      collections: [{ account: "ICICI", amount: 1000 }],
+      expenses: [],
+      transfers: [{ from_account: "Adjustments", to_account: "ICICI", amount: 1 }],
+    };
+    assert.equal(accountBalance("ICICI", data), 1001); // Re 1 test credit now in the book balance
+    assert.equal(sumByAccount(data.collections, "*"), 1000); // revenue unchanged
+  });
+
   test("missing arrays default to empty rather than throwing", () => {
     assert.equal(accountBalance("HDFC", {}), 0);
   });

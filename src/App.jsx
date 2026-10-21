@@ -147,6 +147,7 @@ const NAV_BASE = [
 ];
 
 const ACCOUNTS = ["HDFC", "ICICI", "Cash", "Healthcare"];
+const TRANSFER_ACCOUNTS = [...ACCOUNTS, "Adjustments"];
 
 // Tabs where date-range filtering applies (financial and reporting views).
 // Academic suite and Admin manage their own temporal scoping or lists.
@@ -1334,10 +1335,10 @@ function AppShell() {
           const problems = [];
           if (!isValidDateStr(date)) problems.push("Missing or invalid date");
           if (!isPositiveNumber(amount)) problems.push("Amount must be a positive number");
-          if (!ACCOUNTS.includes(from_account))
-            problems.push(`From Account must be one of ${ACCOUNTS.join(", ")}`);
-          if (!ACCOUNTS.includes(to_account))
-            problems.push(`To Account must be one of ${ACCOUNTS.join(", ")}`);
+          if (!TRANSFER_ACCOUNTS.includes(from_account))
+            problems.push(`From Account must be one of ${TRANSFER_ACCOUNTS.join(", ")}`);
+          if (!TRANSFER_ACCOUNTS.includes(to_account))
+            problems.push(`To Account must be one of ${TRANSFER_ACCOUNTS.join(", ")}`);
           if (from_account && from_account === to_account)
             problems.push("From and To must differ");
 

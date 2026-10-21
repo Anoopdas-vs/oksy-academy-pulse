@@ -243,7 +243,7 @@ export const REPORTS = [
     description: "Account-to-account movements in the period.",
     downloadable: true,
     filters: [
-      { key: "account", label: "Involving", options: ["All", "HDFC", "ICICI", "Cash", "Healthcare"] },
+      { key: "account", label: "Involving", options: ["All", "HDFC", "ICICI", "Cash", "Healthcare", "Adjustments"] },
     ],
     build({ transfers }, f, range) {
       let rows = within(transfers, range);
