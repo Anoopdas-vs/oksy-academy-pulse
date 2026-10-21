@@ -1,6 +1,6 @@
 # 04 — Phase 1 Plan: Security Hot-fixes on Current Production
 
-> **Status (21 Oct 2026): APPROVED by Anoop (D-1, D-18 = yes). Migrations 40–48 verified on staging and APPLIED TO PRODUCTION on 21 Oct 2026 (after a green backup run and Anoop's explicit go-ahead). Structural post-checks passed; owner smoke test on pulse.oksyacademy.in pending.** Results: see §0.1.
+> **Status (21 Oct 2026): APPROVED by Anoop (D-1, D-18 = yes). Migrations 40–48 verified on staging and APPLIED TO PRODUCTION on 21 Oct 2026 (after a green backup run and Anoop's explicit go-ahead). Structural post-checks passed; owner smoke test on pulse.oksyacademy.in PASSED (Owner + Executive, 21 Oct). PHASE 1 SIGNED OFF by Anoop.** Remaining manual steps: M-1, M-2, M-4. Results: see §0.1.
 > Prepared 2026-10-06 from the Phase 0 audit (`01_CURRENT_SYSTEM_AUDIT.md` §A6). **Revised 2026-10-21** (see §0: migration numbers now start at 40; conflicts with migrations 38/39 checked).
 
 ## 0. Revision 2026-10-21 (after PR #36)

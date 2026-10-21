@@ -7,7 +7,7 @@
 | Phase | Status |
 |---|---|
 | Phase 0 — Audit (`00`–`03`) | **Done**, delivered 2026-10-06 (audit predates the changes listed below) |
-| Phase 1 — Security hot-fixes | **DONE on production 21 Oct 2026** (migrations 40–48, `04_…` §11). Left: live smoke test, manual steps M-1/M-2/M-4, merge small submissions fix |
+| Phase 1 — Security hot-fixes | **DONE on production 21 Oct 2026** (migrations 40–48, `04_…` §11). Smoke test passed, **Phase 1 signed off by Anoop 21 Oct**. Left: manual steps M-1/M-2/M-4, merge small submissions fix + Phase 1 files to main |
 | Later phases | Not started |
 
 Housekeeping note: during Phase 0 a read-only `git status` left an empty `.git/index.lock` in the local repo; it was removed (with permission) the same day. No other files were touched.
