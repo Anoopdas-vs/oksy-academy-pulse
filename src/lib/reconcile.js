@@ -195,6 +195,19 @@ export function extractUtrs(...texts) {
   return found ? Array.from(new Set(found)) : [];
 }
 
+// Short digit runs (4-11) in a record's reference: staff often type only the
+// LAST digits of the UTR. A run counts as a UTR tail when a bank line's
+// 12-digit UTR ends with it (see utrTailHit).
+export function extractUtrTails(...texts) {
+  const found = texts.filter(Boolean).join(" ").match(/(?<![0-9A-Za-z])[0-9]{4,11}(?![0-9A-Za-z])/g);
+  return found ? Array.from(new Set(found)) : [];
+}
+const utrTailHit = (lineUtrs, refText) => {
+  const tails = extractUtrTails(refText);
+  return tails.some((t) => lineUtrs.some((u) => u.endsWith(t)));
+};
+const UTR_TAIL_DAYS = 10;
+
 // Every unused ledger entry that could explain `ln` (same direction, same
 // amount to the rupee, within `dayWindow` calendar days), scored and sorted
 // best-first. The single place this filter lives -- autoMatch and the
@@ -492,6 +505,8 @@ const nameMatches = (payer, label) =>
 // Passes (each only on what is still open, an entry used at most once):
 //   a) auto_utr    12-digit UTR in the description equals the entry's reference
 //                  AND the amount is equal; unequal amount -> review
+//   a2) auto_utr   same, but the entry holds only the LAST 4+ digits of the UTR
+//                  (amount equal, date within 10 days, unique)
 //   b) auto_exact  same date + amount, exactly one candidate on both sides
 //   n) auto_name   2+ same-date same-amount candidates: the payer name in the
 //                  description confirms exactly one (and nobody else's) entry
@@ -555,6 +570,36 @@ export function matchStatementLines(lines, account, data, { usedKeys = [] } = {}
         return;
       }
       pool.forEach((e) => held.add(entryKey(e)));
+    });
+  }
+
+  // a2) UTR tail: staff typed only the last 4+ digits of the UTR in the
+  // record's reference. Needs the same amount, direction and a date within
+  // UTR_TAIL_DAYS; links only when exactly one entry fits and no other line
+  // claims it, otherwise the line goes to review.
+  {
+    const hits = new Map();
+    open().forEach((i) => {
+      const utrs = extractUtrs(lines[i].description, lines[i].reference);
+      if (!utrs.length || !facts[i].cents) return;
+      const pool = ledger.filter(
+        (e) =>
+          free(e) &&
+          e.delta > 0 === facts[i].wantDeposit &&
+          centsOf(e) === facts[i].cents &&
+          Math.abs(daysBetweenISO(facts[i].dateStr, isoDay(e.date))) <= UTR_TAIL_DAYS &&
+          utrTailHit(utrs, e.refText)
+      );
+      if (pool.length) hits.set(i, pool);
+    });
+    const counts = claimCounts([...hits.values()]);
+    hits.forEach((pool, i) => {
+      if (pool.length === 1 && counts.get(entryKey(pool[0])) === 1) {
+        link(i, [pool[0]], "auto_utr");
+      } else {
+        review(i, "utr_ambiguous", pool);
+        pool.forEach((e) => held.add(entryKey(e)));
+      }
     });
   }
 
@@ -931,7 +976,7 @@ export function linkCandidates(line, account, data, usedKeys = [], { showAllDate
   return ledger
     .filter((e) => !used.has(entryKey(e)) && e.delta > 0 === wantDeposit)
     .map((e) => {
-      const utr = utrs.length > 0 && extractUtrs(e.refText).some((u) => utrs.includes(u));
+      const utr = utrs.length > 0 && (extractUtrs(e.refText).some((u) => utrs.includes(u)) || utrTailHit(utrs, e.refText));
       return {
         ...bookItemOf(e, labels),
         dateDiff: daysBetweenISO(isoDay(e.date), dateStr),
