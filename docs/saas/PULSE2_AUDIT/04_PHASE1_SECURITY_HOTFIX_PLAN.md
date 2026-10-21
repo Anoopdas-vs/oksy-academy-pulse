@@ -39,7 +39,9 @@
 - `npm test` 385 pass / 0 fail / 6 skipped (live-RLS suites skip without env); `npm run lint` clean; `npm run build` OK.
 - Advisor (staging): remaining anon-executable definer functions are only the policy helpers (`is_admin`, `is_super_admin`, `is_staff_or_admin`, `is_approved_user`, `can_view_financials`, `my_batch`, `my_student_ref`, `teaches_batch`) — deliberately left for Phase 3. `collections_basic` and `exam_questions_public` still flagged as SECURITY DEFINER views (Phase 3 rebuild). Leaked-password protection = manual step M-1.
 - Known limits: "student sees only own receipts" ran with a student who has 0 receipts (proves no foreign rows, not own-row visibility); the walkthrough must confirm a student with receipts sees them. Executive UI will show a database error if an Executive edits fee fields in Enrollment (no UI change in Phase 1).
-- Not yet done: staging walkthrough in the app per role (§5), production apply, manual steps M-1…M-4.
+- **In-app walkthrough on staging (21 Oct, done by Claude via local app, staging test logins):** Executive: fee change blocked with message "Only the Owner or an Admin can change fee amounts"; non-fee edit OK; Dropped write-off OK; Fee Collection (9 receipts), Expenses, Admin open; only 2 reports shown (Fee Collection Register, Student Dues) and both load; batch Edit/Delete buttons not shown. Owner: all 12 report cards open with consistent totals (collected 27,500; expenses 540), fee and batch-fee changes OK. Student 1 and Faculty: all tabs load, no money tabs, no errors. Test data restored.
+- Not covered in the UI (no fixtures on staging; covered by SQL checks only): student file upload (10 MB / type limit), assignment submit, exam attempt, notify batch, live class attendance. Test these once on staging with real fixtures if wanted.
+- Not yet done: production apply, manual steps M-1…M-4.
 
 ## 1. Goal (one purpose)
 
