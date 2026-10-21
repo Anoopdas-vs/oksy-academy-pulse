@@ -268,13 +268,15 @@ create policy "expenses_admin_delete" on public.expenses
 -- 6. TRANSFERS  (money moved between accounts — not income or expense)
 -- ------------------------------------------------------------
 -- A transfer moves money between Cash / HDFC / ICICI (and "Healthcare" for
--- repaying Healthcare what it spent on the Academy). It changes account
--- balances only; Net P&L is unaffected.
+-- repaying Healthcare what it spent on the Academy). "Adjustments" is a
+-- transfer-only counter-account for bank items that are neither income nor
+-- expense (migration 39); it is never allowed on collections/expenses.
+-- Transfers change account balances only; Net P&L is unaffected.
 create table public.transfers (
   id bigint generated always as identity primary key,
   date date not null,
-  from_account text not null check (from_account in ('HDFC', 'ICICI', 'Cash', 'Healthcare')),
-  to_account   text not null check (to_account   in ('HDFC', 'ICICI', 'Cash', 'Healthcare')),
+  from_account text not null check (from_account in ('HDFC', 'ICICI', 'Cash', 'Healthcare', 'Adjustments')),
+  to_account   text not null check (to_account   in ('HDFC', 'ICICI', 'Cash', 'Healthcare', 'Adjustments')),
   amount numeric not null check (amount > 0),
   purpose text,
   reference text,
