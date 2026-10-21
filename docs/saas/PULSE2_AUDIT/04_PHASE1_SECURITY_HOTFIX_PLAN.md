@@ -1,6 +1,6 @@
 # 04 — Phase 1 Plan: Security Hot-fixes on Current Production
 
-> **Status: PLAN ONLY — awaiting Anoop's approval (decision D-1 = "show plan first").** Nothing in this document has been applied.
+> **Status (21 Oct 2026): APPROVED by Anoop (D-1, D-18 = yes). Migrations 40–48 written and applied to STAGING ONLY; all checks pass there. Production NOT touched — waiting for walkthrough sign-off + explicit go-ahead.** Results: see §0.1.
 > Prepared 2026-10-06 from the Phase 0 audit (`01_CURRENT_SYSTEM_AUDIT.md` §A6). **Revised 2026-10-21** (see §0: migration numbers now start at 40; conflicts with migrations 38/39 checked).
 
 ## 0. Revision 2026-10-21 (after PR #36)
@@ -31,6 +31,15 @@
 7. **Docs location:** these docs now live in `docs/saas/` in the repo (branch `docs/saas-phase1-plan`).
 
 > **ചുരുക്കത്തിൽ:** ഇപ്പോഴത്തെ app-ലെ security പഴുതുകൾ അടയ്ക്കുക മാത്രമാണ് ഈ phase-ന്റെ ലക്ഷ്യം. Table-കളുടെ ഘടനയോ data-യോ മാറ്റില്ല — ആര്‌ എന്ത് കാണാം/മാറ്റാം എന്ന rules മാത്രം. ആദ്യം staging-ൽ, പിന്നെ നിങ്ങളുടെ അനുമതിയോടെ production-ൽ. ഏകദേശം 4–5 പ്രവൃത്തി ദിവസം.
+
+### 0.1 Staging results (21 Oct 2026)
+
+- Applied to `oksy-pulse-staging` (`mgiowjacjyhdtvrlhaaa`): 40–48, plus 38 (staging was missing it — drift) and a small patch revoking `authenticated` EXECUTE on the trigger functions (folded into the 43/47/48 files).
+- `supabase/checks/40_48_phase1_checks.sql`: 36 PASS / 0 FAIL after 38 was added (impersonates the existing staging super_admin, Executive, faculty and two students; rolls back). Covers 1.1, 1.3–1.10, migration 38 delete rules and migration 39 regression.
+- `npm test` 385 pass / 0 fail / 6 skipped (live-RLS suites skip without env); `npm run lint` clean; `npm run build` OK.
+- Advisor (staging): remaining anon-executable definer functions are only the policy helpers (`is_admin`, `is_super_admin`, `is_staff_or_admin`, `is_approved_user`, `can_view_financials`, `my_batch`, `my_student_ref`, `teaches_batch`) — deliberately left for Phase 3. `collections_basic` and `exam_questions_public` still flagged as SECURITY DEFINER views (Phase 3 rebuild). Leaked-password protection = manual step M-1.
+- Known limits: "student sees only own receipts" ran with a student who has 0 receipts (proves no foreign rows, not own-row visibility); the walkthrough must confirm a student with receipts sees them. Executive UI will show a database error if an Executive edits fee fields in Enrollment (no UI change in Phase 1).
+- Not yet done: staging walkthrough in the app per role (§5), production apply, manual steps M-1…M-4.
 
 ## 1. Goal (one purpose)
 

@@ -7,7 +7,7 @@
 | Phase | Status |
 |---|---|
 | Phase 0 — Audit (`00`–`03`) | **Done**, delivered 2026-10-06 (audit predates the changes listed below) |
-| Phase 1 — Security hot-fixes | **Plan written** (`04_PHASE1_SECURITY_HOTFIX_PLAN.md`), waiting for Anoop's approval. Nothing applied yet. **Migration numbers in the plan must shift: start at 40, not 38** (see below) |
+| Phase 1 — Security hot-fixes | **Approved 21 Oct (D-1 yes, D-18 yes). Built + applied to STAGING only**, checks green (`04_…` §0.1). Production untouched; next: in-app walkthrough per role, backup, then explicit go-ahead. Migrations are 40–48 |
 | Later phases | Not started |
 
 Housekeeping note: during Phase 0 a read-only `git status` left an empty `.git/index.lock` in the local repo; it was removed (with permission) the same day. No other files were touched.
@@ -71,3 +71,9 @@ Both projects share one repo; these went through GitHub `main` (PR #36 merged 20
 - **Adjustments:** enforced only by hard-coded CHECK constraints on `transfers` plus hard-coded lists in `CreateNewTab.jsx`, `BankingPage.jsx`, `App.jsx` (`TRANSFER_ACCOUNTS`). Phase 5 accounts table needs a "transfers-only" account type.
 - **Phase 1 migrations renumbered to start at 40** (see `04_…` §0). Docs copied into repo `docs/saas/` on branch `docs/saas-phase1-plan`.
 - Open: approve Phase 1; D-18 (Executive blocked from fee/waiver changes; recommended yes).
+
+## Addendum 2026-10-21 (Phase 1 on staging)
+
+- **D-18 = yes** (Executives cannot change fee amounts or waivers; only exception is the Dropped write-off). Branch `phase1/security-hotfixes` (not pushed). Migrations 40–48 in `supabase/`, checks in `supabase/checks/40_48_phase1_checks.sql`.
+- Staging was missing migration 38; applied it so staging matches production.
+- Production apply still needs: fresh backup, Anoop's walkthrough sign-off, explicit go-ahead.
