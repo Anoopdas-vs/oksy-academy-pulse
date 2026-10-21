@@ -53,3 +53,20 @@ lazy-loaded only when a DSN exists. Test: open the app, browser console, run
 Branch protection (Anoop): GitHub > repo > Settings > Branches > Add rule for `main`:
 require PR, require status checks `lint + test + build`, `npm audit`, `secret scan`,
 block force pushes, block deletions.
+
+## Result 2026-10-22: baseline built and proven against production
+- `supabase/migrations/20261021000000_baseline.sql` = pg_dump of `public` + auth trigger, storage
+  bucket/policies, cron, extensions + **exact grants** generated from live ACLs
+  (`scripts/db/generate-grants.sql`). Without section C a fresh database was MORE open than
+  production (anon could run every function; authenticated could read raw `collections`).
+- `scripts/db/catalog-fingerprint.sql` gives one hash per object kind. Local DB rebuilt from the
+  baseline == production on all 13 kinds (tables, columns, constraints, indexes, policies,
+  functions, fn/table/column grants, triggers, views, bucket, cron).
+- Staging vs production (read-only): matches on 10/13. Differences:
+  1. constraint `bank_match_links_source_check`: prod allows `legacy_backfill`, staging does not.
+     It exists in the repo only on unmerged branch `fix/backfill-legacy-links`; prod was changed
+     outside main. Baseline follows prod.
+  2. functions/fn_grants: prod has `rls_auto_enable()` (Supabase event-trigger helper), staging does not.
+- Local run: `supabase db start` (DB only; full `supabase start` fails: kong unhealthy on this Mac).
+  Free disk space matters (images ~8 GB).
+- Still to do: mark baseline as applied in prod/staging history (`supabase migration repair`, needs approval).
