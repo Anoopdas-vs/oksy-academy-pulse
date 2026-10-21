@@ -1,6 +1,6 @@
 # 07 — Phase 2 Step 0: Phase 1 close-out (2026-10-21)
 
-Status: **staging done and green; production NOT yet changed** (waiting for Anoop's "yes").
+Status: **migration 49 and the 38 history row APPLIED on production 2026-10-21 (Anoop approved, backup confirmed). Verified: all 8 helpers anon=false, authenticated=true; anon-executable advisor warnings gone. Pending: Anoop deletes `smart-endpoint` in dashboard, owner smoke test, items e/f.**
 
 ## Findings and actions
 
