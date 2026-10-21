@@ -32,7 +32,9 @@ import {
   BOOK_KIND_TAG,
 } from "../lib/reconcile.js";
 
-const ACCOUNTS = ["HDFC", "ICICI", "Cash", "Healthcare"];
+// "Adjustments": transfer-only counter-account for bank items that are neither income nor
+// expense (test credits, partner drawings). Moves the bank balance, never revenue/expense.
+const ACCOUNTS = ["HDFC", "ICICI", "Cash", "Healthcare", "Adjustments"];
 const BANK_ACCOUNTS = ["HDFC", "ICICI"];
 
 export default function BankingPage({

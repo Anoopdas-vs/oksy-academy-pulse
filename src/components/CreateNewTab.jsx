@@ -4,7 +4,9 @@ import StudentPicker from "./StudentPicker.jsx";
 import { formatMoney } from "../lib/format.js";
 import { outstanding } from "../lib/fees.js";
 
-const ACCOUNTS = ["HDFC", "ICICI", "Cash", "Healthcare"];
+// "Adjustments" is a transfer-only counter-account for bank items that are neither
+// income nor expense (e.g. a Re 1 test credit): it moves the bank balance only.
+const ACCOUNTS = ["HDFC", "ICICI", "Cash", "Healthcare", "Adjustments"];
 
 // "Create new" tab of the Match popup: turns one unmatched bank line into a
 // new fee collection / expense / transfer and links it (the page's

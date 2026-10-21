@@ -1223,3 +1223,94 @@ describe("inter-bank transfers: one link per account", () => {
     assert.ok(!buildSyncPayload(preview, sel).some((p) => p.field === "date"));
   });
 });
+
+describe("matchStatementLines — UTR tail (last 4 digits typed by staff)", () => {
+  const line = (date, amount, desc) => [{ date, deposit: amount, withdrawal: 0, description: desc, reference: "" }];
+  const c = (id, date, amount, reference) => ({ id, account: "ICICI", date, amount, student_name: "X", reference });
+
+  test("last 4 digits in the reference link the line even when dates differ", () => {
+    const data = { collections: [c(1, "2026-10-03", 5000, "9059"), c(2, "2026-10-04", 5000, "")] };
+    const [r] = matchStatementLines(line("2026-10-05", 5000, "UPI/621570429059/UPI/abc@ok/BANK"), "ICICI", data);
+    assert.equal(r.status, "matched");
+    assert.deepEqual(r.links, [{ bookKind: "collection", bookId: 1, source: "auto_utr" }]);
+  });
+
+  test("tail with a different amount does not link", () => {
+    const data = { collections: [c(1, "2026-10-05", 4000, "9059")] };
+    const [r] = matchStatementLines(line("2026-10-05", 5000, "UPI/621570429059/UPI/abc@ok/BANK"), "ICICI", data);
+    assert.notEqual(r.links.length, 1);
+  });
+
+  test("two entries with the same tail and amount go to review, not auto-linked", () => {
+    const data = { collections: [c(1, "2026-10-05", 5000, "9059"), c(2, "2026-10-05", 5000, "9059")] };
+    const [r] = matchStatementLines(line("2026-10-05", 5000, "UPI/621570429059/UPI/abc@ok/BANK"), "ICICI", data);
+    assert.equal(r.status, "review");
+    assert.equal(r.reason, "utr_ambiguous");
+  });
+});
+
+describe("UTR tail — all kinds, edge cases, re-run", () => {
+  const desc = "UPI/621570429059/UPI/abc@ok/BANK";
+  const wd = (date, amount, d = desc) => [{ date, deposit: 0, withdrawal: amount, description: d, reference: "" }];
+  const dep = (date, amount, d = desc) => [{ date, deposit: amount, withdrawal: 0, description: d, reference: "" }];
+
+  test("expense with the tail in its reference links on a withdrawal", () => {
+    const data = { expenses: [{ id: 7, account: "ICICI", date: "2026-10-04", amount: 700, category: "Misc", reference: "9059" }] };
+    const [r] = matchStatementLines(wd("2026-10-05", 700), "ICICI", data);
+    assert.deepEqual(r.links, [{ bookKind: "expense", bookId: 7, source: "auto_utr" }]);
+  });
+
+  test("transfer with the tail in its reference links (both directions of money, one account)", () => {
+    const data = { transfers: [{ id: 3, from_account: "Adjustments", to_account: "ICICI", date: "2026-10-05", amount: 1, reference: "9059" }] };
+    const [r] = matchStatementLines(dep("2026-10-05", 1), "ICICI", data);
+    assert.deepEqual(r.links, [{ bookKind: "transfer", bookId: 3, source: "auto_utr" }]);
+  });
+
+  test("wrong direction never links", () => {
+    const data = { collections: [{ id: 1, account: "ICICI", date: "2026-10-05", amount: 500, student_name: "X", reference: "9059" }] };
+    const [r] = matchStatementLines(wd("2026-10-05", 500), "ICICI", data);
+    assert.equal(r.links.length, 0);
+  });
+
+  test("bank text without a 12-digit UTR ignores the tail", () => {
+    const data = { collections: [{ id: 1, account: "ICICI", date: "2026-10-01", amount: 500, student_name: "X", reference: "9059" }] };
+    const [r] = matchStatementLines(dep("2026-10-05", 500, "CASH DEP 9059"), "ICICI", data);
+    assert.equal(r.links.length, 0);
+  });
+
+  test("date more than 10 days away does not link", () => {
+    const data = { collections: [{ id: 1, account: "ICICI", date: "2026-09-20", amount: 500, student_name: "X", reference: "9059" }] };
+    const [r] = matchStatementLines(dep("2026-10-05", 500), "ICICI", data);
+    assert.equal(r.links.length, 0);
+  });
+
+  test("an entry already linked elsewhere is not taken", () => {
+    const data = { collections: [{ id: 1, account: "ICICI", date: "2026-10-05", amount: 500, student_name: "X", reference: "9059" }] };
+    const [r] = matchStatementLines(dep("2026-10-05", 500), "ICICI", data, { usedKeys: ["collection:1"] });
+    assert.equal(r.links.length, 0);
+  });
+
+  test("planRerun links an open line by tail and skips entries held by matched lines", () => {
+    const data = { collections: [
+      { id: 1, account: "ICICI", date: "2026-10-04", amount: 500, student_name: "X", reference: "9059" },
+    ] };
+    const row = (id, status, extra = {}) => ({
+      id, seq: id, account: "ICICI", txn_date: "2026-10-05", deposit: 500, withdrawal: 0,
+      description: desc, reference: "", status, ...extra,
+    });
+    const open = [row(1, "unmatched")];
+    const plan = planRerun(open, open, "ICICI", data);
+    assert.equal(plan[0].new_status, "matched");
+    assert.equal(plan[0].match_id, 1);
+
+    const taken = row(2, "matched", { match_kind: "collection", match_id: 1 });
+    assert.equal(planRerun(open, [...open, taken], "ICICI", data).filter((c) => c.new_status === "matched").length, 0);
+  });
+
+  test("linkCandidates flags a tail hit as utr", () => {
+    const data = { collections: [{ id: 1, account: "ICICI", date: "2026-10-04", amount: 500, student_name: "X", reference: "9059" }] };
+    const line = { txn_date: "2026-10-05", deposit: 500, withdrawal: 0, description: desc, reference: "" };
+    const c = linkCandidates(line, "ICICI", data);
+    assert.equal(c[0].utr, true);
+  });
+});
