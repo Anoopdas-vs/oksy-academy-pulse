@@ -116,7 +116,8 @@ export async function deleteAssignment(id) {
 export async function fetchSubmissions(assignmentIds) {
   let q = supabase
     .from("assignment_submissions")
-    .select("*, student:profiles(full_name,email)");
+    // Two FKs point at profiles (student_id, graded_by); name the one we want.
+    .select("*, student:profiles!assignment_submissions_student_id_fkey(full_name,email)");
   if (assignmentIds?.length) q = q.in("assignment_id", assignmentIds);
   const { data, error } = await q;
   return { rows: data || [], error: soft(error) };
